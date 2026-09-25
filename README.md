@@ -1,26 +1,30 @@
 # Tang Nano 9K experiments
 
 FPGA designs for the Sipeed Tang Nano 9K (Gowin GW1NR-9C), built entirely with the open-source
-toolchain. They go from blinking LEDs up to a full-screen animated pixel-art scene and a
-playable Pong with a curved-CRT look, all rendered live by the FPGA over HDMI.
+toolchain. They go from blinking LEDs up to a full-screen animated pixel-art scene and a neon
+Pong played over it on a curved-CRT screen, all rendered live by the FPGA over HDMI.
 
-![Pixel-art sunset rendered by the FPGA](media/scene.png)
-
-**[Watch 30 seconds of the animation (media/scene.mp4)](media/scene.mp4).** The video was rendered
-with the Python reference model, which matches the hardware pixel for pixel, so it is exactly
-what the board shows from power-up.
+![Neon Pong over the pixel-art sunset](media/pong-sunset.png)
 
 ## Designs
 
-| Where | What it does |
+| Folder | What it does |
 |---|---|
 | `blink/` | The six onboard LEDs fill up one at a time, then empty in reverse |
-| `hdmi/`, `DESIGN=bars` | 640×480 colour bars |
-| `hdmi/`, `DESIGN=logo` | An anti-aliased logo bouncing around the screen; the LEDs flash on a perfect corner hit |
-| `hdmi/`, `DESIGN=scene` (default) | A parallax pixel-art sunset over a lake |
-| `hdmi/`, `DESIGN=pong` | Pong against the computer on a simulated arcade CRT, played with the two buttons |
+| `hdmi/bars/` | 640×480 colour bars |
+| `hdmi/logo/` | An anti-aliased logo bouncing around the screen; the LEDs flash on a perfect corner hit |
+| `hdmi/sunset/` | A parallax pixel-art sunset over a lake |
+| `hdmi/pong-classic/` | Pong against the computer on a monochrome arcade CRT |
+| `hdmi/pong-sunset/` | Neon Pong over the sunset, with sparks, reflections and screen shake |
+| `hdmi/common/` | Shared HDMI output, DSP multiplier wrapper, pin constraints and build rules |
 
-### The scene
+### The sunset
+
+![Pixel-art sunset rendered by the FPGA](media/scene.png)
+
+**[Watch 30 seconds of it (media/scene.mp4)](media/scene.mp4).** The video was rendered with the
+Python reference model, which matches the hardware pixel for pixel, so it is exactly what the
+board shows from power-up.
 
 The scene is 320×240 pixels, each drawn as a 2×2 block on a 640×480 @ 60 Hz screen. There is no
 frame buffer: the FPGA computes the colour of every pixel as the screen is scanned out, 25.2
@@ -40,26 +44,40 @@ the 25.2 MHz pixel clock.
 
 ### Pong
 
-![Pong in attract mode on a simulated CRT](media/pong.png)
-
 You are the left paddle: **S1** moves up, **S2** moves down, and either button starts a game.
 The computer plays the right paddle; first to 11 wins. When nobody is playing, the machine
 plays itself under a blinking PRESS BUTTON. Where the ball hits your paddle sets its angle,
-and the ball speeds up on every hit. Hold both buttons for a second to switch phosphor
-colour (white, green, amber). A piezo buzzer between pin 25 and GND plays the blips.
+and the ball speeds up on every hit. A piezo buzzer between pin 25 and GND plays the blips.
+The LEDs sweep in attract mode and show your score in binary during a game.
 
-The picture goes through a barrel distortion (curved glass with rounded corners), with glow
-around the ball, paddles and walls, a fading ball trail, scanlines, vignetting, static and a
-rolling hum bar. The LEDs sweep in attract mode and show your score in binary during a game.
+Both versions draw the picture through a barrel distortion (curved glass with rounded
+corners), with scanlines, vignetting, static and a rolling hum bar.
 
-Yosys does not map multiplies to the Gowin DSP blocks, so `gowin_mult.v` instantiates the
-`MULT18X18` primitive directly for the curvature, vignette and colour maths (9 of 20 DSPs).
-The game update is spread over four clocks after each frame so it meets timing (61 MHz).
+- **`pong-classic`:** monochrome phosphor with glow around the ball, paddles and walls and a
+  fading ball trail. Hold both buttons for a second to switch white, green and amber.
+
+  ![Classic Pong in attract mode](media/pong.png)
+
+- **`pong-sunset`:** the sunset (without its foreground shore) is the arena, bent by the same
+  curved glass. A cyan player paddle faces a magenta computer paddle, both glowing; the ball
+  heats up from ice to red-hot as rallies speed up and leaves a fire trail; sparks burst off
+  every hit; the ball and paddles reflect in the lake, rippling with the water; and every point
+  shakes the screen and flashes the scorer's colour. Holding both buttons cycles four themes:
+  sunset, neon grid, and the whole picture in green or amber phosphor.
+
+Yosys does not map multiplies to the Gowin DSP blocks, so `common/gowin_mult.v` instantiates
+the `MULT18X18` primitive directly for the curvature, vignette and colour maths. The game
+update is spread over four clocks after each frame so it meets timing.
+
+`pong-sunset` fills about 70% of the chip's logic (plus 17 block RAMs and 10 DSPs) and meets
+timing at 44 MHz. To fit, the spark particles sit in a ring updated one per clock by a single
+set of adders, and the per-pixel box tests use bit checks rather than compares, since on Gowin
+every compare is a carry chain.
 
 ### HDMI output
 
-`hdmi/dvi_tx.v` generates DVI (which every HDMI monitor accepts) with no external video chip. The
-PLL turns the 27 MHz oscillator into a 126 MHz serial clock, `CLKDIV` divides it by 5 to the
+`common/dvi_tx.v` generates DVI (which every HDMI monitor accepts) with no external video chip.
+The PLL turns the 27 MHz oscillator into a 126 MHz serial clock, `CLKDIV` divides it by 5 to the
 25.2 MHz pixel clock, `tmds_encoder.v` does the TMDS 8b/10b encoding, and `OSER10` serialisers
 drive the HDMI pins through emulated-LVDS buffers. A design only supplies a colour for each
 `(x, y)` a fixed number of clocks later.
@@ -79,15 +97,18 @@ rule that gives the `plugdev` group access to the board.
 
 ## Building
 
+Each design builds from its own folder:
+
 ```sh
-cd hdmi
-make                      # build the scene (DESIGN=scene)
-make load                 # load into SRAM (lost at power-off)
-make flash                # write to flash (survives power-off)
-make DESIGN=logo load     # or DESIGN=bars
+cd hdmi/pong-sunset
+make           # build pong-sunset.fs
+make load      # load into SRAM (lost at power-off)
+make flash     # write to flash (survives power-off)
+make sim       # simulate (see below)
 ```
 
-`blink/` has the same `make`, `make load` and `make flash` targets.
+`blink/` has the same `make`, `make load` and `make flash` targets. Art and colour tables are
+generated by each design's Python script during the build.
 
 If the board ever shows up on USB as `ffff:ffff BLIOT CDC Virtual ComPort` instead of the
 `0403:6010` JTAG debugger, the HDMI monitor is back-powering it: unplug USB **and** HDMI,
@@ -99,27 +120,12 @@ with a message; rebuild with another `SEED=n` if it happens.
 
 ## Verification
 
-- `make sim`: the TMDS encoder against an independent decoder: every byte value plus about 175,000
-  random words, exact control tokens, and bounded DC balance.
-- `make sim-scene FRAME=n`: renders frame `n` of `scene.v` in Icarus Verilog and compares all
-  307,200 pixels with the Python model. Frames 7, 1200 and 23456 match exactly.
-- `make sim-pong`: plays over 40,000 frames of Pong logic (machine vs machine, an idle player,
-  a bot player, the colour switch) checking that paddles and ball stay on the field and games
-  finish, then renders attract, in-game, game-over and green-phosphor frames to PNG.
-- `make video`: renders `media/scene.mp4` from the model.
-
-## Files in `hdmi/`
-
-| File | Purpose |
-|---|---|
-| `dvi_tx.v` | Clocks, 640×480 timing, TMDS encoding and serialisation |
-| `tmds_encoder.v`, `tmds_encoder_tb.v` | DVI 8b/10b encoder and its testbench |
-| `bars.v`, `logo.v`, `scene.v`, `pong.v` | The designs (`top` module in each) |
-| `logo_gen.py` | Draws the logo bitmap from DejaVu Sans Bold |
-| `scene_gen.py` | Scene art, palette and layout, plus the reference model of `scene.v` |
-| `scene_tb.v` | Dumps one simulated frame of `scene.v` for comparison with the model |
-| `scene_video.py` | Renders the animation to MP4 with the model |
-| `pong_defs.vh` | Pong geometry and tuning, shared by the game and the renderer |
-| `pong_game_tb.v`, `pong_frame_tb.v`, `frame2png.py` | Pong logic test and frame renders |
-| `gowin_mult.v` | Registered 18x18 multiply on a Gowin DSP block (behavioural model with `-DSIM`) |
-| `tangnano9k.cst` | Pin constraints: clock, HDMI pairs, LEDs, buttons, beeper |
+- `make sim-tmds` (any HDMI folder): the TMDS encoder against an independent decoder: every byte
+  value plus about 175,000 random words, exact control tokens, and bounded DC balance.
+- `sunset/`, `make sim FRAME=n`: renders frame `n` in Icarus Verilog and compares all 307,200
+  pixels with the Python model. Frames 7, 1200 and 23456 match exactly. `make video` renders
+  `media/scene.mp4` from the model.
+- `pong-classic/` and `pong-sunset/`, `make sim`: plays over 40,000 frames of game logic (machine
+  vs machine, an idle player, a bot player, the theme switch) checking that paddles and ball stay
+  on the field and games finish, then renders frames to PNG: attract mode, in play, game over and
+  themes; for `pong-sunset` also a paddle hit (sparks) and a point (flash and shake).

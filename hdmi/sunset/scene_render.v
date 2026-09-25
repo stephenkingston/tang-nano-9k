@@ -1,36 +1,7 @@
-// Tang Nano 9K: a parallax pixel-art sunset over a lake, on the HDMI port.
-//
-// The scene is 320x240 logical pixels, each shown as 2x2 screen pixels. Every pixel is
-// composited on the fly from palette-indexed layers held in block RAM (see scene_gen.py,
-// which generates the art and scene_params.vh, and contains a reference model of this file).
-// Nothing is stored as a frame: sky, sun, water and birds are computed per pixel.
-module top (
-    input  wire       clk,          // 27 MHz oscillator
-    output wire       tmds_clk_p,
-    output wire       tmds_clk_n,
-    output wire [2:0] tmds_d_p,
-    output wire [2:0] tmds_d_n,
-    output wire [5:0] led           // active low
-);
-    wire        clk_pix, reset, frame;
-    wire [9:0]  x, y;
-    wire [23:0] rgb;
-
-    dvi_tx #(.PIPE(4)) video (
-        .clk_27(clk), .clk_pix(clk_pix), .reset(reset), .x(x), .y(y), .frame(frame),
-        .rgb(rgb),
-        .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n), .tmds_d_p(tmds_d_p), .tmds_d_n(tmds_d_n)
-    );
-
-    scene_render scene (.clk(clk_pix), .x(x), .y(y), .frame(frame), .rgb(rgb));
-
-    assign led = ~{5'b00000, ~reset};
-endmodule
-
-
 // Colour of screen pixel (x, y), 4 clocks later.
 module scene_render #(
-    parameter T0 = 0                // frame number to start at (for simulation)
+    parameter T0 = 0,               // frame number to start at (for simulation)
+    parameter FRONT = 1             // 0 leaves out the foreground shore (saves 7 block RAMs)
 ) (
     input  wire        clk,
     input  wire [9:0]  x,
@@ -45,7 +16,6 @@ module scene_render #(
     reg [1:0]  clouds_rom    [0:CLOUDS_H*STRIP_W-1];
     reg [1:0]  mountains_rom [0:MOUNT_H*STRIP_W-1];
     reg [1:0]  hills_rom     [0:HILLS_H*STRIP_W-1];
-    reg [1:0]  front_rom     [0:FRONT_H*STRIP_W-1];
     (* rom_style = "logic" *) reg [8:0]  sky_rom    [0:HORIZON-1];   // {band, dither threshold}
     (* rom_style = "logic" *) reg [3:0]  ripple_rom [0:511];         // signed x offset
     (* rom_style = "logic" *) reg [0:0]  bird_rom   [0:255];         // 2 frames of 16x8
@@ -56,7 +26,6 @@ module scene_render #(
         $readmemh("scene_clouds.hex",    clouds_rom);
         $readmemh("scene_mountains.hex", mountains_rom);
         $readmemh("scene_hills.hex",     hills_rom);
-        $readmemh("scene_front.hex",     front_rom);
         $readmemh("scene_sky.hex",       sky_rom);
         $readmemh("scene_ripple.hex",    ripple_rom);
         $readmemh("scene_bird.hex",      bird_rom);
@@ -170,7 +139,21 @@ module scene_render #(
         endcase
     end
 
-    reg [1:0] vs = 0, vc = 0, vm = 0, vh = 0, vf = 0;
+    reg [1:0] vs = 0, vc = 0, vm = 0, vh = 0;
+    wire [1:0] vf;
+
+    generate
+        if (FRONT) begin : g_front
+            reg [1:0] front_rom [0:FRONT_H*STRIP_W-1];
+            reg [1:0] q = 0;
+            initial $readmemh("scene_front.hex", front_rom);
+            always @(posedge clk)
+                q <= front_rom[addr_f];
+            assign vf = q;
+        end else begin : g_no_front
+            assign vf = 2'd0;
+        end
+    endgenerate
     reg [8:0] skyB = 0;
     reg       inS = 0, inC = 0, inM = 0, inH = 0, inF = 0;
     reg       waterB = 0, birdB = 0, sparkleB = 0, twinkleB = 0, nearB = 0, sun_topB = 0;
@@ -182,7 +165,6 @@ module scene_render #(
         vc   <= clouds_rom[addr_c];
         vm   <= mountains_rom[addr_m];
         vh   <= hills_rom[addr_h];
-        vf   <= front_rom[addr_f];
         skyB <= sky_rom[ryA];
 
         inS <= !waterA && in_rows(lyA, STARS_TOP, STARS_H);

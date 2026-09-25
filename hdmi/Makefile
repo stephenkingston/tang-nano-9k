@@ -1,4 +1,4 @@
-# Build one of the HDMI designs:  make [DESIGN=scene|logo|bars] [load|flash]
+# Build one of the HDMI designs:  make [DESIGN=scene|pong|logo|bars] [load|flash]
 DESIGN  ?= scene
 
 TOP     := top
@@ -9,10 +9,12 @@ CST     := tangnano9k.cst
 # Placer seed; change it if the HDMI clock check below fails
 SEED    ?= 1
 
-SRC     := $(DESIGN).v dvi_tx.v tmds_encoder.v
+EXTRA_pong := gowin_mult.v
+SRC     := $(DESIGN).v dvi_tx.v tmds_encoder.v $(EXTRA_$(DESIGN))
 DATA_logo := logo.hex
 SCENE_DATA := scene_params.vh $(addprefix scene_,$(addsuffix .hex,palette stars clouds mountains hills front sky ripple bird))
 DATA_scene := $(SCENE_DATA)
+DATA_pong := pong_defs.vh
 
 all: $(DESIGN).fs
 
@@ -55,11 +57,22 @@ sim-scene: $(SCENE_DATA)
 	vvp -n scene_tb.vvp
 	python3 scene_gen.py --check scene_frame.hex --frame $(FRAME)
 
+# Play thousands of frames of Pong game logic, then render a few frames to PNG
+PONG_FRAMES := attract:TICKS=230 game:TICKS=1000,PLAYER=2 over:TICKS=20,PLAYER=1,OVER=1 green:TICKS=170,THEME=1
+sim-pong: pong_defs.vh
+	iverilog -g2005 -DSIM -s pong_game_tb -o pong_game_tb.vvp pong_game_tb.v pong.v gowin_mult.v
+	vvp -n pong_game_tb.vvp
+	@for f in $(PONG_FRAMES); do \
+		name=$${f%%:*}; params=$$(echo $${f#*:} | tr ',' ' ' | sed 's/\([A-Z]*=\)/-P pong_frame_tb.\1/g'); \
+		iverilog -g2005 -DSIM -s pong_frame_tb $$params -o pong_frame_tb.vvp pong_frame_tb.v pong.v gowin_mult.v && \
+		vvp -n pong_frame_tb.vvp && python3 frame2png.py pong_frame.hex pong_$$name.png || exit 1; \
+	done
+
 # Render the scene animation to an MP4 with the reference model (needs ffmpeg)
 video:
 	python3 scene_video.py --seconds 30 --out ../media/scene.mp4
 
 clean:
-	rm -f *.json *.fs *.log *.vvp logo.hex logo_preview.png $(SCENE_DATA) scene_frame.* scene_preview.png
+	rm -f *.json *.fs *.log *.vvp logo.hex logo_preview.png $(SCENE_DATA) scene_frame.* scene_preview.png pong_frame.hex pong_*.png
 
-.PHONY: all load flash sim sim-scene video clean
+.PHONY: all load flash sim sim-scene sim-pong video clean

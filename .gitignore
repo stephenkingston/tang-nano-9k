@@ -1,0 +1,15 @@
+# Build outputs
+*.json
+*.fs
+*.log
+*.vvp
+__pycache__/
+.DS_Store
+
+# Generated at build time by logo_gen.py / scene_gen.py, and simulation dumps
+hdmi/logo.hex
+hdmi/logo_preview.png
+hdmi/scene_params.vh
+hdmi/scene_*.hex
+hdmi/scene_frame*
+hdmi/scene_preview.png

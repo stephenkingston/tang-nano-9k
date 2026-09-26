@@ -7,6 +7,10 @@ over HDMI and played with the board's two buttons.
 
 ![NANO QUEST gameplay, recorded from the Verilog](media/nano-quest.gif)
 
+**How it works:** [an interactive explainer](https://stephenkingston.github.io/tang-nano-9k/) walks through
+NANO QUEST's HDMI output, pixel pipeline, game logic, sound and tests, with live demos built from the
+game's real tiles, sprites and level.
+
 ## Designs
 
 | Folder | What it does |
@@ -18,6 +22,7 @@ over HDMI and played with the board's two buttons.
 | `hdmi/pong-classic/` | Pong against the computer on a monochrome arcade CRT |
 | `hdmi/platformer/` | NANO QUEST: run, jump, stomp slimes, collect coins and reach the flag |
 | `hdmi/common/` | Shared HDMI output, DSP multiplier wrapper, pin constraints and build rules |
+| `docs/` | The explainer page (GitHub Pages); `page_data.py` copies the game's data into it |
 
 ### The sunset
 

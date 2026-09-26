@@ -1,0 +1,2563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How NANO QUEST works</title>
+<meta name="description" content="How a Mario-style platformer runs as pure logic on a Tang Nano 9K FPGA: no CPU, no frame buffer, every pixel computed as the HDMI signal goes out.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Pixelify+Sans:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f3eee3;
+  --surface: #faf7f0;
+  --raised: #fffdf8;
+  --ink: #1c1a22;
+  --muted: #5b5664;
+  --faint: #8b8593;
+  --line: #d9d0be;
+  --line-strong: #bfb4a0;
+  --accent: #c84c0c;
+  --accent-ink: #a53e08;
+  --accent-soft: rgba(200, 76, 12, .12);
+  --blue: #2451d6;
+  --gold: #a4650c;
+  --green: #127a38;
+  --purple: #7f30be;
+  --red: #c42a2a;
+  --code-bg: #ece5d5;
+  --bezel: #1d1b24;
+  --shadow: 0 1px 0 rgba(60, 40, 10, .05), 0 10px 30px -18px rgba(60, 40, 10, .35);
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-pixel: "Pixelify Sans", "IBM Plex Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111219;
+    --surface: #171922;
+    --raised: #1d202b;
+    --ink: #ebe6db;
+    --muted: #aaa4b2;
+    --faint: #7d7888;
+    --line: #2b2e3c;
+    --line-strong: #3d4152;
+    --accent: #f07a3c;
+    --accent-ink: #ff9b62;
+    --accent-soft: rgba(240, 122, 60, .14);
+    --blue: #86a2ff;
+    --gold: #f2b24c;
+    --green: #62d08c;
+    --purple: #c592ff;
+    --red: #ff6b6b;
+    --code-bg: #1d2030;
+    --bezel: #07070b;
+    --shadow: 0 1px 0 rgba(0, 0, 0, .3), 0 12px 32px -18px rgba(0, 0, 0, .8);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111219;
+  --surface: #171922;
+  --raised: #1d202b;
+  --ink: #ebe6db;
+  --muted: #aaa4b2;
+  --faint: #7d7888;
+  --line: #2b2e3c;
+  --line-strong: #3d4152;
+  --accent: #f07a3c;
+  --accent-ink: #ff9b62;
+  --accent-soft: rgba(240, 122, 60, .14);
+  --blue: #86a2ff;
+  --gold: #f2b24c;
+  --green: #62d08c;
+  --purple: #c592ff;
+  --red: #ff6b6b;
+  --code-bg: #1d2030;
+  --bezel: #07070b;
+  --shadow: 0 1px 0 rgba(0, 0, 0, .3), 0 12px 32px -18px rgba(0, 0, 0, .8);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 17px/1.68 var(--font-body);
+  overflow-x: hidden;
+}
+a { color: var(--accent-ink); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+code, kbd, .mono { font-family: var(--font-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: .08em .35em; border-radius: 4px; white-space: nowrap; }
+kbd { border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 .35em; background: var(--raised); }
+strong { font-weight: 600; }
+::selection { background: var(--accent-soft); }
+
+/* ---------------------------------------------------------------- layout */
+.col {
+  display: grid;
+  grid-template-columns:
+    [full-start] minmax(16px, 1fr)
+    [wide-start] minmax(0, 9rem)
+    [text-start] min(42rem, calc(100% - 32px)) [text-end]
+    minmax(0, 9rem) [wide-end]
+    minmax(16px, 1fr) [full-end];
+}
+.col > * { grid-column: text; }
+.col > .wide { grid-column: wide; }
+.col > .full { grid-column: full; }
+
+/* ---------------------------------------------------------------- hero */
+.banner { display: block; width: 100%; height: 120px; image-rendering: pixelated; background: #6b8cff; }
+header.hero { padding: 40px 0 8px; }
+.kicker {
+  font: 500 12px/1.4 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+h1 {
+  font: 700 clamp(42px, 8vw, 76px)/1.02 var(--font-pixel);
+  letter-spacing: -.01em;
+  margin: 0 0 18px;
+}
+h1 .q { color: var(--accent); }
+.dek { font-size: clamp(18px, 2.3vw, 21px); line-height: 1.55; color: var(--muted); margin: 0 0 28px; max-width: 38em; }
+.dek strong { color: var(--ink); font-weight: 500; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 32px 0 8px;
+}
+.stats div { background: var(--surface); padding: 14px 16px 12px; }
+.stats b { display: block; font: 700 26px/1.1 var(--font-pixel); color: var(--ink); }
+.stats span { font-size: 13px; color: var(--muted); line-height: 1.35; display: block; margin-top: 4px; }
+
+nav.toc { margin: 36px 0 12px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+nav.toc h2 { font: 500 12px/1 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; columns: 2 16rem; column-gap: 28px; }
+nav.toc li { break-inside: avoid; padding: 3px 0; font-size: 15px; }
+nav.toc li span { font: 500 12px var(--font-mono); color: var(--accent-ink); display: inline-block; min-width: 3.2em; }
+nav.toc a { color: var(--ink); text-decoration: none; }
+nav.toc a:hover { color: var(--accent-ink); text-decoration: underline; }
+
+/* ---------------------------------------------------------------- sections */
+section { padding: 34px 0 8px; }
+.world {
+  display: flex; align-items: center; gap: 10px;
+  font: 500 12px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent-ink);
+  margin: 36px 0 10px;
+}
+.world i { width: 14px; height: 14px; background: var(--accent); display: inline-block; box-shadow: inset -3px -3px 0 rgba(0,0,0,.25), inset 3px 3px 0 rgba(255,255,255,.35); }
+h2 { font: 600 clamp(27px, 4vw, 36px)/1.15 var(--font-body); margin: 0 0 18px; letter-spacing: -.015em; }
+h3 { font: 600 19px/1.35 var(--font-body); margin: 34px 0 8px; }
+p { margin: 0 0 18px; }
+ul, ol { padding-left: 1.25em; margin: 0 0 18px; }
+li { margin: 4px 0; }
+.lede { font-size: 19px; color: var(--muted); }
+.note {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  margin: 0 0 20px;
+  font-size: 16px;
+}
+.note p:last-child { margin: 0; }
+
+pre {
+  font: 400 13.5px/1.6 var(--font-mono);
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 20px;
+  tab-size: 4;
+}
+pre .c { color: var(--faint); font-style: italic; }
+pre .k { color: var(--purple); }
+pre .n { color: var(--gold); }
+pre .hl { background: var(--accent-soft); display: inline-block; width: 100%; }
+.codecap { font: 500 12px var(--font-mono); color: var(--muted); margin: -12px 0 20px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 15px; margin: 0 0 20px; }
+th, td { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 500 12px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.num, th.num { text-align: right; font-family: var(--font-mono); font-size: 14px; }
+.tablewrap { overflow-x: auto; margin: 0 0 20px; }
+.tablewrap table { margin: 0; }
+
+/* ---------------------------------------------------------------- figures */
+figure { margin: 26px 0 30px; }
+.fig {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+figcaption { font-size: 14.5px; line-height: 1.5; color: var(--muted); margin-top: 12px; }
+figcaption b { color: var(--ink); font-weight: 600; }
+svg.diagram { display: block; width: 100%; height: auto; color: var(--ink); font-family: var(--font-body); }
+svg.diagram text { fill: currentColor; font-size: 12.5px; }
+svg.diagram .box { fill: var(--raised); stroke: currentColor; stroke-width: 1.3; }
+svg.diagram .box.hot { stroke: var(--accent); stroke-width: 2; }
+svg.diagram .title { font-weight: 600; font-size: 14px; font-family: var(--font-mono); }
+svg.diagram .sub { fill: var(--muted); font-size: 12px; }
+svg.diagram .lbl { fill: var(--muted); font-size: 12px; }
+svg.diagram .wire { fill: none; stroke: currentColor; stroke-width: 1.4; }
+svg.diagram .wire.hot { stroke: var(--accent); stroke-width: 2; }
+svg.diagram .dash { stroke-dasharray: 4 4; }
+svg.diagram .acc { fill: var(--accent); }
+svg.diagram .acc-t { fill: var(--accent-ink); }
+
+.screen {
+  background: var(--bezel);
+  border-radius: 10px;
+  padding: 8px;
+  position: relative;
+}
+.screen canvas, canvas.px {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border-radius: 3px;
+  touch-action: pan-y;
+}
+.gif { display: block; width: 100%; height: auto; image-rendering: pixelated; border-radius: 3px; background: #000; aspect-ratio: 4 / 3; }
+
+.ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.btn {
+  font: 500 13px/1 var(--font-mono);
+  color: var(--ink);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 8px 13px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, .chip:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.big { padding: 12px 18px; font-size: 14px; }
+.btn[aria-pressed="true"], .btn.held { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.chip { font: 500 12.5px/1 var(--font-mono); display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--raised); color: var(--muted); cursor: pointer; }
+.chip[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: var(--accent-soft); }
+.range { display: inline-flex; align-items: center; gap: 8px; font: 500 12.5px var(--font-mono); color: var(--muted); }
+.range input { accent-color: var(--accent); width: 150px; }
+.range output { min-width: 9ch; color: var(--ink); }
+.spacer { flex: 1; }
+
+.readout {
+  font: 400 13px/1.55 var(--font-mono);
+  color: var(--muted);
+  margin-top: 10px;
+  min-height: 1.55em;
+}
+.readout b { color: var(--ink); font-weight: 500; }
+.tag { display: inline-block; font: 600 11px/1 var(--font-mono); letter-spacing: .06em; padding: 4px 7px; border-radius: 4px; background: var(--code-bg); color: var(--ink); text-transform: uppercase; }
+.tag.vis { background: #2a7a3a; color: #fff; }
+.tag.hb { background: #6b5a1a; color: #fff; }
+.tag.vb { background: var(--accent); color: #fff; }
+
+/* two-column blocks inside a wide figure */
+.split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 760px) { .split { grid-template-columns: minmax(0, 1fr); } }
+
+/* TMDS */
+.swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.swatches button { width: 24px; height: 24px; border-radius: 4px; border: 1px solid rgba(0,0,0,.25); cursor: pointer; padding: 0; }
+.swatches button[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 2px; }
+.bits { display: inline-flex; gap: 2px; font: 500 13px var(--font-mono); }
+.bits span { width: 22px; height: 26px; display: inline-grid; place-items: center; border-radius: 3px; background: var(--code-bg); }
+.bits span.one { background: var(--ink); color: var(--bg); }
+.bits span.ctl { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.bits.one-bit span.one { background: var(--ink); }
+.tmds-row { display: grid; grid-template-columns: 8.5em 1fr; gap: 6px 12px; align-items: center; margin: 6px 0; font-size: 14px; }
+.tmds-row > :first-child { font: 500 12px var(--font-mono); color: var(--muted); }
+.tmds-seq td { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+
+/* art */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.letters { font: 500 13px/1 var(--font-mono); display: inline-grid; gap: 1px; user-select: none; }
+.letters span { width: 1.25em; height: 1.35em; display: grid; place-items: center; border-radius: 2px; cursor: default; }
+.letters span.on { outline: 2px solid var(--accent); outline-offset: -1px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin-top: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.2); }
+.legend code { background: none; padding: 0; color: var(--ink); }
+.artpair { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 600px) { .artpair { grid-template-columns: minmax(0, 1fr); } }
+.artpair canvas { max-width: 260px; }
+.sheet-label { font: 400 13px var(--font-mono); color: var(--muted); min-height: 1.5em; margin-top: 6px; }
+.anim-strip { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 8px; }
+.anim-strip > div { font: 400 12.5px var(--font-mono); color: var(--muted); }
+.anim-strip canvas { width: 64px; height: 64px; image-rendering: pixelated; display: inline-block; margin-right: 4px; border-radius: 3px; outline: 2px solid transparent; outline-offset: 1px; }
+.anim-strip canvas.on { outline-color: var(--accent); }
+
+/* minimap */
+.minimap { cursor: grab; touch-action: none; margin-bottom: 10px; }
+.minimap:active { cursor: grabbing; }
+.viewport { cursor: crosshair; touch-action: pan-y; }
+
+/* pipeline + inspector */
+.trace { font: 400 13px/1.55 var(--font-mono); }
+.trace .stage { border-left: 3px solid var(--line-strong); padding: 6px 0 8px 12px; margin-bottom: 6px; }
+.trace .stage h4 { font: 600 12px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink); margin: 0 0 3px; }
+.trace .stage div { color: var(--muted); }
+.trace .stage b { color: var(--ink); font-weight: 500; }
+.trace .sw { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.3); }
+.zoomrow { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
+.zoomrow figure { margin: 0; }
+.zoomrow canvas { width: 128px; height: 128px; image-rendering: pixelated; border-radius: 3px; display: block; }
+.zoomrow figcaption { margin-top: 4px; font: 400 12px var(--font-mono); }
+
+.pipe-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; font-size: 12.5px; }
+.pipe-stages > div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--muted); background: var(--raised); }
+.pipe-stages h4 { font: 600 11.5px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--accent-ink); margin: 0 0 4px; }
+.pipe-stages b { color: var(--ink); font-weight: 500; }
+@media (max-width: 760px) { .pipe-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+  .bits span { width: 15px; height: 20px; font-size: 11px; }
+  .tmds-row { grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 10px 0; }
+  .soundtoggle { right: 10px; bottom: 10px; padding: 7px 10px; font-size: 12px; }
+}
+
+/* step machine */
+.steps { list-style: none; margin: 0; padding: 0; font: 400 13px/1.45 var(--font-mono); }
+.steps li { display: grid; grid-template-columns: 3.2em minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 6px; margin: 0; cursor: pointer; }
+.steps li .n { color: var(--faint); }
+.steps li .t { color: var(--muted); }
+.steps li .t b { color: var(--ink); font-weight: 500; }
+.steps li.on { background: var(--accent-soft); }
+.steps li.on .n { color: var(--accent-ink); font-weight: 600; }
+.steps li.done .t { opacity: .75; }
+.port { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 12px 0 4px; font: 400 12px/1.35 var(--font-mono); }
+.port div { border: 1px dashed var(--line-strong); border-radius: 6px; padding: 7px 8px; min-height: 52px; color: var(--muted); }
+.port div b { display: block; font-weight: 500; color: var(--ink); }
+.port div.full { border-style: solid; border-color: var(--accent); }
+.budget-note { font: 400 13px var(--font-mono); color: var(--muted); }
+
+/* sound board */
+.sfx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.sfx {
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  border-radius: 10px;
+  padding: 10px 12px 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font: inherit;
+}
+.sfx:hover { border-color: var(--accent); }
+.sfx.on { border-color: var(--accent); background: var(--accent-soft); }
+.sfx b { font: 600 14px var(--font-mono); display: block; }
+.sfx small { font: 400 11.5px var(--font-mono); color: var(--muted); }
+.sfx svg { display: block; width: 100%; height: 38px; margin-top: 6px; color: var(--accent); }
+.sfx svg .ph { stroke: var(--ink); stroke-width: 1.5; }
+
+.soundtoggle {
+  position: fixed; right: 16px; bottom: 16px; z-index: 10;
+  box-shadow: var(--shadow);
+}
+
+/* bars */
+.bars { display: grid; gap: 10px; margin: 8px 0 20px; }
+.bar { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 9.5em; gap: 10px; align-items: center; font: 400 13px var(--font-mono); white-space: nowrap; }
+.bar .track { height: 14px; background: var(--code-bg); border-radius: 3px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--accent); }
+.bar .v { color: var(--muted); text-align: right; }
+@media (max-width: 480px) { .bar { grid-template-columns: 6.5em minmax(0, 1fr) 8.2em; font-size: 11.5px; gap: 8px; } }
+
+.bugs { display: grid; gap: 14px; margin: 10px 0 24px; }
+.bug { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 4px; background: var(--surface); }
+.bug h4 { margin: 0 0 6px; font: 600 16px var(--font-body); }
+.bug h4 span { font: 500 11px var(--font-mono); color: var(--red); letter-spacing: .08em; text-transform: uppercase; margin-right: 8px; }
+.bug p { font-size: 15.5px; }
+
+.checks { list-style: none; padding: 0; }
+.checks li { padding-left: 1.6em; position: relative; }
+.checks li::before { content: ""; position: absolute; left: 0; top: .45em; width: 11px; height: 11px; background: var(--green); box-shadow: inset -2px -2px 0 rgba(0,0,0,.25); }
+
+footer { margin: 60px 0 0; padding: 28px 0 90px; border-top: 1px solid var(--line); color: var(--muted); font-size: 15px; }
+footer p { margin: 0 0 10px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<canvas class="banner" id="banner" aria-hidden="true"></canvas>
+
+<main class="col">
+
+<header class="hero">
+  <p class="kicker">Tang Nano 9K · Gowin GW1NR-9 FPGA · HDMI</p>
+  <h1>How NANO QUEST<br>works</h1>
+  <p class="dek">A Mario-style platformer built out of logic gates. There's <strong>no processor, no program and no stored picture</strong>. Every pixel is worked out at the moment the HDMI cable needs it, 25.2&nbsp;million times a second, and the game itself runs in the gap between two frames.</p>
+</header>
+
+<figure class="fig wide" style="margin-top:6px">
+  <div class="screen"><img class="gif" src="https://raw.githubusercontent.com/stephenkingston/tang-nano-9k/main/media/nano-quest.gif" alt="NANO QUEST gameplay: Nano runs through a blue-sky level, breaking bricks, collecting coins and a mushroom, and stomping purple slimes." width="640" height="480"></div>
+  <figcaption><b>This isn't a screen recording.</b> Every frame of the GIF is the actual Verilog, simulated clock by clock in Icarus Verilog while a bot presses the buttons. It's pixel for pixel what the board sends to the monitor.</figcaption>
+</figure>
+
+<div class="stats wide">
+  <div><b>0</b><span>processors: it's all logic</span></div>
+  <div><b>0</b><span>frame buffers: pixels are computed on the fly</span></div>
+  <div><b>25.2M</b><span>pixels per second, each 3 clocks after it's asked for</span></div>
+  <div><b>41</b><span>clocks of game logic per frame, out of 420,000</span></div>
+  <div><b>34%</b><span>of the chip's logic, 16 of 26 block RAMs</span></div>
+</div>
+
+<nav class="toc" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><span>1-1</span><a href="#no-cpu">No CPU: five circuits side by side</a></li>
+    <li><span>1-2</span><a href="#beam">Racing the beam</a></li>
+    <li><span>1-3</span><a href="#hdmi">From colours to HDMI wires</a></li>
+    <li><span>1-4</span><a href="#art">Art is just numbers</a></li>
+    <li><span>2-1</span><a href="#level">The level is a grid of tile numbers</a></li>
+    <li><span>2-2</span><a href="#pipeline">Drawing one pixel in 3 clocks</a></li>
+    <li><span>2-3</span><a href="#sprites">Sprites, big Nano and the mushroom</a></li>
+    <li><span>3-1</span><a href="#steps">The game runs between frames</a></li>
+    <li><span>3-2</span><a href="#physics">Physics in sixteenths of a pixel</a></li>
+    <li><span>3-3</span><a href="#bricks">A level you can break</a></li>
+    <li><span>3-4</span><a href="#sound">Sound from one pin</a></li>
+    <li><span>4-1</span><a href="#testing">Testing without seeing the screen</a></li>
+    <li><span>4-2</span><a href="#build">From Verilog to the chip</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ 1-1 -->
+<section id="no-cpu" class="col full" style="padding-top:0">
+<p class="world"><i></i>World 1-1</p>
+<h2>No CPU: five circuits side by side</h2>
+<p>An FPGA is a chip full of small, uncommitted building blocks: about 8,640 four-input lookup tables (each can be any logic function of 4 bits), 6,480 flip-flops that each remember one bit, adders, and 26 blocks of on-chip RAM. A design written in Verilog describes how to wire those blocks together. When the chip powers up it loads that wiring from flash, and from then on it <em>is</em> the circuit.</p>
+<p>There's no instruction stream and no "main loop". NANO QUEST is five circuits wired side by side, all ticking on the same 25.2&nbsp;MHz clock and all doing their work at once:</p>
+
+<figure class="fig wide">
+<svg class="diagram" viewBox="0 0 880 390" role="img" aria-label="Block diagram: the buttons feed plat_game; plat_game reads and writes the level map through port B, sends its state to plat_render and sound codes to plat_sfx; plat_render reads tile ids from the level map through port A and hands colours to dvi_tx 3 clocks after dvi_tx asks for pixel x, y; dvi_tx sends a frame tick to plat_game and drives the HDMI monitor.">
+  <defs>
+    <marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+    <marker id="ah1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="acc"/></marker>
+  </defs>
+  <rect class="box" x="20" y="50" width="110" height="60" rx="7"/>
+  <text x="75" y="76" text-anchor="middle" class="title">S1 · S2</text>
+  <text x="75" y="95" text-anchor="middle" class="sub">buttons</text>
+
+  <rect class="box hot" x="190" y="40" width="200" height="80" rx="7"/>
+  <text x="290" y="70" text-anchor="middle" class="title">plat_game</text>
+  <text x="290" y="89" text-anchor="middle" class="sub">the rules: runs once per frame,</text>
+  <text x="290" y="105" text-anchor="middle" class="sub">in about 41 clocks</text>
+
+  <rect class="box" x="190" y="200" width="200" height="70" rx="7"/>
+  <text x="290" y="229" text-anchor="middle" class="title">plat_map</text>
+  <text x="290" y="248" text-anchor="middle" class="sub">the level: 4,096 tiles, 2 ports</text>
+
+  <rect class="box hot" x="470" y="110" width="170" height="80" rx="7"/>
+  <text x="555" y="140" text-anchor="middle" class="title">plat_render</text>
+  <text x="555" y="159" text-anchor="middle" class="sub">colour of each pixel,</text>
+  <text x="555" y="175" text-anchor="middle" class="sub">3 clocks after asked</text>
+
+  <rect class="box" x="710" y="110" width="150" height="80" rx="7"/>
+  <text x="785" y="140" text-anchor="middle" class="title">dvi_tx</text>
+  <text x="785" y="159" text-anchor="middle" class="sub">screen timing,</text>
+  <text x="785" y="175" text-anchor="middle" class="sub">TMDS, serialisers</text>
+
+  <rect class="box" x="20" y="310" width="130" height="60" rx="7"/>
+  <text x="85" y="336" text-anchor="middle" class="title">plat_sfx</text>
+  <text x="85" y="355" text-anchor="middle" class="sub">note player</text>
+
+  <rect class="box" x="710" y="300" width="150" height="60" rx="7"/>
+  <text x="785" y="335" text-anchor="middle" class="title">monitor</text>
+
+  <path class="wire" d="M130 80 H186" marker-end="url(#ah1)"/>
+  <text x="158" y="72" text-anchor="middle" class="lbl">press</text>
+
+  <path class="wire" d="M390 70 H430 V135 H466" marker-end="url(#ah1)"/>
+  <text x="438" y="98" class="lbl">game state</text>
+
+  <path class="wire" d="M390 235 H430 V170 H466" marker-end="url(#ah1)"/>
+  <text x="438" y="226" class="lbl">port A: tile ids</text>
+
+  <path class="wire" d="M290 124 V196" marker-start="url(#ah1)" marker-end="url(#ah1)"/>
+  <text x="298" y="164" class="lbl">port B: read, write</text>
+
+  <path class="wire hot" d="M640 135 H706" marker-end="url(#ah1a)"/>
+  <text x="673" y="127" text-anchor="middle" class="lbl">rgb</text>
+  <path class="wire hot" d="M710 170 H644" marker-end="url(#ah1a)"/>
+  <text x="677" y="186" text-anchor="middle" class="lbl">(x, y)</text>
+
+  <path class="wire" d="M785 110 V20 H290 V36" marker-end="url(#ah1)"/>
+  <text x="540" y="14" text-anchor="middle" class="lbl">frame tick: once per frame, when the picture ends</text>
+
+  <path class="wire" d="M220 120 V150 H85 V306" marker-end="url(#ah1)"/>
+  <text x="152" y="143" text-anchor="middle" class="lbl">sound code</text>
+
+  <path class="wire" d="M150 340 H196" marker-end="url(#ah1)"/>
+  <text x="202" y="344" class="lbl">pin 25: square wave to a piezo</text>
+
+  <path class="wire" d="M785 190 V296" marker-end="url(#ah1)"/>
+  <text x="793" y="250" class="lbl">HDMI:</text>
+  <text x="793" y="266" class="lbl">4 wire pairs</text>
+</svg>
+<figcaption><b>The whole design.</b> The two highlighted boxes do the interesting work. <code>plat_render</code> answers "what colour is pixel (x,&nbsp;y)?" for every pixel of every frame. <code>plat_game</code> wakes once per frame, updates the world, then waits. The only thing they share is the state wires and the level map.</figcaption>
+</figure>
+
+<ul>
+  <li><b><code>dvi_tx</code></b> generates the video timing, asks for one pixel per clock, and turns the colours it gets back into HDMI signals.</li>
+  <li><b><code>plat_render</code></b> works out the colour of each pixel from the level, the sprites, the text and the palette, with no memory of what it drew before.</li>
+  <li><b><code>plat_game</code></b> holds the world: Nano, the slimes, the score and the timer. It advances everything by one frame each time <code>dvi_tx</code> says a picture has finished.</li>
+  <li><b><code>plat_map</code></b> is the level itself, 256 × 16 tile numbers in RAM. The renderer reads it and the game reads and writes it at the same time.</li>
+  <li><b><code>plat_sfx</code></b> plays sound effects as square waves on one pin.</li>
+</ul>
+<p>All of it is in <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/platformer/platformer.v"><code>platformer.v</code></a> (about 1,000 lines) and the shared HDMI core in <a href="https://github.com/stephenkingston/tang-nano-9k/tree/main/hdmi/common"><code>hdmi/common</code></a>. The rest of this page walks through each piece with interactive versions built from the game's real data.</p>
+</section>
+
+<!-- ============================================================ 1-2 -->
+<section id="beam" class="col full">
+<p class="world"><i></i>World 1-2</p>
+<h2>Racing the beam</h2>
+<p>A 640×480 picture at 60&nbsp;Hz is sent as a stream: left to right along each line, top to bottom, one pixel per tick of a 25.2&nbsp;MHz clock. Each line is actually 800 clocks long and each frame 525 lines tall. The extra time is <b>blanking</b>, left over from CRTs that needed time to swing the electron beam back, and it's where the sync pulses go.</p>
+<p>The usual way to make a picture is to draw it into a <b>frame buffer</b> in memory and have the video hardware read it out. This chip has 26 blocks of 18&nbsp;Kbit RAM, about 479,000 bits in all. A 320×240 frame of 6-bit colour numbers is 460,800 bits, 96% of it, leaving nothing for the art or the level.</p>
+<p>So NANO QUEST does what the Atari 2600 did and <b>races the beam</b>. <code>dvi_tx</code> announces which pixel it's about to send, (x,&nbsp;y), and the renderer has to hand back that pixel's colour exactly 3 clocks later. Nothing is stored between frames: the picture exists only as it goes down the cable.</p>
+
+<figure class="fig wide" id="beam-fig">
+  <div class="screen"><canvas id="beam-c" width="800" height="525" aria-label="Animated scan of one video frame: 800 by 525 clock positions, with the visible 640 by 480 picture drawn as the beam passes and the blanking areas shaded."></canvas></div>
+  <div class="ctrl">
+    <button class="btn" id="beam-play">Pause</button>
+    <label class="range">Speed <input type="range" id="beam-speed" min="0" max="100" value="22"><output id="beam-speed-o"></output></label>
+  </div>
+  <div class="readout" id="beam-r"></div>
+  <figcaption><b>One frame, slowed down.</b> The bright dot is the pixel being sent. The previous frame is dimmed so you can see the new one being drawn over it. The shaded strips on the right and bottom are blanking: 160 clocks at the end of every line, and 45 whole lines at the bottom. When the beam enters the bottom blanking, the game gets its <b>frame tick</b> and updates the world before the next frame begins. Drag the speed to the far right for the real rate: 60 frames a second.</figcaption>
+</figure>
+
+<p>This design has a neat side effect: the game only changes the world during vertical blanking, when nothing is being drawn. Every frame is drawn from one consistent state, with no tearing and no double buffering.</p>
+</section>
+
+<!-- ============================================================ 1-3 -->
+<section id="hdmi" class="col full">
+<p class="world"><i></i>World 1-3</p>
+<h2>From colours to HDMI wires</h2>
+<p>The Tang Nano 9K's HDMI socket is wired straight to FPGA pins, with no video chip in between, so the FPGA has to produce the signal itself. HDMI is backwards compatible with DVI, and plain DVI is all this needs: three data wire pairs (red, green and blue) and a clock pair.</p>
+
+<figure class="fig wide">
+<svg class="diagram" viewBox="0 0 900 300" role="img" aria-label="Clock and data path. Top: 27 MHz crystal, rPLL multiplies to 126 MHz, CLKDIV divides by 5 to the 25.2 MHz pixel clock. Bottom: 24-bit rgb goes into three TMDS encoders, 8 bits to 10 bits, then OSER10 serialisers send 10 bits per pixel clock on both edges of 126 MHz, 252 Mbit per second, through differential output buffers to the HDMI pairs.">
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <text x="10" y="18" class="lbl" style="font-family:var(--font-mono);letter-spacing:.08em">CLOCKS</text>
+  <rect class="box" x="10" y="30" width="130" height="58" rx="7"/>
+  <text x="75" y="55" text-anchor="middle" class="title">27 MHz</text>
+  <text x="75" y="73" text-anchor="middle" class="sub">crystal on the board</text>
+  <path class="wire" d="M140 59 H196" marker-end="url(#ah2)"/>
+  <rect class="box" x="200" y="30" width="190" height="58" rx="7"/>
+  <text x="295" y="55" text-anchor="middle" class="title">rPLL</text>
+  <text x="295" y="73" text-anchor="middle" class="sub">÷3 then ×14</text>
+  <path class="wire" d="M390 59 H486" marker-end="url(#ah2)"/>
+  <text x="438" y="50" text-anchor="middle" class="lbl">126 MHz</text>
+  <rect class="box" x="490" y="30" width="150" height="58" rx="7"/>
+  <text x="565" y="55" text-anchor="middle" class="title">CLKDIV ÷5</text>
+  <text x="565" y="73" text-anchor="middle" class="sub">hard divider</text>
+  <path class="wire" d="M640 59 H716" marker-end="url(#ah2)"/>
+  <text x="678" y="50" text-anchor="middle" class="lbl">25.2 MHz</text>
+  <rect class="box hot" x="720" y="30" width="170" height="58" rx="7"/>
+  <text x="805" y="55" text-anchor="middle" class="title">pixel clock</text>
+  <text x="805" y="73" text-anchor="middle" class="sub">drives everything else</text>
+
+  <text x="10" y="140" class="lbl" style="font-family:var(--font-mono);letter-spacing:.08em">EACH PIXEL</text>
+  <rect class="box" x="10" y="152" width="130" height="72" rx="7"/>
+  <text x="75" y="180" text-anchor="middle" class="title">rgb</text>
+  <text x="75" y="198" text-anchor="middle" class="sub">8 + 8 + 8 bits</text>
+  <text x="75" y="213" text-anchor="middle" class="sub">from the renderer</text>
+  <path class="wire" d="M140 188 H196" marker-end="url(#ah2)"/>
+  <rect class="box hot" x="200" y="152" width="190" height="72" rx="7"/>
+  <text x="295" y="180" text-anchor="middle" class="title">TMDS encode ×3</text>
+  <text x="295" y="198" text-anchor="middle" class="sub">8 bits → 10 bits</text>
+  <text x="295" y="213" text-anchor="middle" class="sub">at 25.2 MHz</text>
+  <path class="wire" d="M390 188 H486" marker-end="url(#ah2)"/>
+  <text x="438" y="180" text-anchor="middle" class="lbl">10 bits</text>
+  <rect class="box" x="490" y="152" width="150" height="72" rx="7"/>
+  <text x="565" y="180" text-anchor="middle" class="title">OSER10 ×4</text>
+  <text x="565" y="198" text-anchor="middle" class="sub">both edges of 126 MHz</text>
+  <text x="565" y="213" text-anchor="middle" class="sub">= 252 Mbit/s</text>
+  <path class="wire" d="M640 188 H716" marker-end="url(#ah2)"/>
+  <text x="678" y="180" text-anchor="middle" class="lbl">1 bit</text>
+  <rect class="box" x="720" y="152" width="170" height="72" rx="7"/>
+  <text x="805" y="180" text-anchor="middle" class="title">ELVDS_OBUF</text>
+  <text x="805" y="198" text-anchor="middle" class="sub">differential pair</text>
+  <text x="805" y="213" text-anchor="middle" class="sub">to the HDMI socket</text>
+
+  <text x="10" y="262" class="lbl">The fourth serialiser sends <tspan style="font-family:var(--font-mono)">0000011111</tspan> every pixel: a 25.2 MHz clock on its own pair, so the monitor knows where each 10-bit word starts.</text>
+</svg>
+<figcaption><b>Clocks on top, data underneath.</b> The PLL multiplies the board's 27&nbsp;MHz crystal up to 126&nbsp;MHz. A divider makes the pixel clock, exactly 25.2&nbsp;MHz, which gives 25.2M ÷ (800 × 525) = 60.0 frames per second. Each colour goes out as 10 bits per pixel, so each wire pair carries 252&nbsp;Mbit/s.</figcaption>
+</figure>
+
+<h3>Why 10 bits for an 8-bit colour?</h3>
+<p>At 252&nbsp;Mbit/s over a cheap cable, the receiver has to recover the bits from the edges it sees, and the signal can't drift towards all-ones or all-zeros. <b>TMDS</b> (transition-minimised differential signalling) handles both in two steps:</p>
+<ol>
+  <li><b>Fewer transitions.</b> Each bit is XORed with the previous output bit, or XNORed if the byte has lots of ones. Whichever gives fewer changes wins, and bit 8 records the choice.</li>
+  <li><b>DC balance.</b> The encoder keeps a running count of ones minus zeros sent so far. If the next word would push that count further from zero, it inverts the word and sets bit 9 to say so.</li>
+</ol>
+<p>During blanking the encoder sends one of four special control words instead. They carry the horizontal and vertical sync pulses on the blue channel. Try it with the game's own colours:</p>
+
+<figure class="fig wide" id="tmds-fig">
+  <div class="swatches" id="tmds-sw" role="group" aria-label="Game palette colours"></div>
+  <div class="ctrl" style="margin:0 0 12px">
+    <span class="mono" style="font-size:13px;color:var(--muted)">channel</span>
+    <button class="chip" data-ch="2" aria-pressed="false">red</button>
+    <button class="chip" data-ch="1" aria-pressed="true">green</button>
+    <button class="chip" data-ch="0" aria-pressed="false">blue</button>
+  </div>
+  <div id="tmds-out"></div>
+  <figcaption><b>The encoder in <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/common/tmds_encoder.v"><code>tmds_encoder.v</code></a>, running in your browser.</b> Bits are shown in the order they're sent (bit 0 first). The table sends the same colour five pixels in a row: notice how bit 9 flips on some words to keep the running balance near zero.</figcaption>
+</figure>
+</section>
+
+<!-- ============================================================ 1-4 -->
+<section id="art" class="col full">
+<p class="world"><i></i>World 1-4</p>
+<h2>Art is just numbers</h2>
+<p>Nothing is drawn inside the FPGA. A Python script, <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/platformer/platformer_gen.py"><code>platformer_gen.py</code></a>, makes all the graphics, text and the level, and writes them as hex files. When the design is built, those files become the initial contents of the chip's block RAMs.</p>
+<p>The characters are typed in by hand as grids of letters, one letter per pixel and one colour per letter. Hover over either side to see how they match:</p>
+
+<figure class="fig wide" id="art-fig">
+  <div class="tabs" id="art-tabs" role="group" aria-label="Sprite"></div>
+  <div class="artpair">
+    <div class="letters" id="art-letters" aria-label="Letter grid"></div>
+    <div>
+      <canvas class="px" id="art-c" width="16" height="16" aria-label="The sprite as pixels"></canvas>
+      <div class="legend" id="art-legend"></div>
+    </div>
+  </div>
+  <figcaption><b>Sprites are 16×16 pixels with 4 bits per pixel</b>, so each pixel is a number from 0 to 15 that picks one of 16 sprite colours. 0 means transparent. Big Nano is 16×32, stored as two 16×16 frames, top and bottom.</figcaption>
+</figure>
+
+<p>The script then packs everything into tables. Tiles are 16×16 at 4 bits per pixel with their own 16-colour palette. Clouds, hills and bushes are drawn as large shapes and cut into tiles, and simple things like bricks and pipes are drawn from rules. Here's everything the renderer has to work with:</p>
+
+<figure class="fig wide">
+  <div class="screen"><canvas class="px" id="sheet-t" aria-label="All 64 tile slots"></canvas></div>
+  <div class="sheet-label" id="sheet-t-l">Hover a tile.</div>
+  <div class="screen" style="margin-top:12px"><canvas class="px" id="sheet-s" aria-label="All 32 sprite frames"></canvas></div>
+  <div class="sheet-label" id="sheet-s-l">Hover a sprite frame.</div>
+  <figcaption><b>Top: 64 tile slots. Bottom: 32 sprite frames.</b> Each pixel is a 4-bit colour number. A shared 64-entry palette turns numbers into real colours: 0–15 for tiles, 16–31 for sprites, then a few for the logo and text.</figcaption>
+</figure>
+
+<h3>Animation without moving anything</h3>
+<p>Spinning coins and shimmering <code>?</code> blocks don't need any game logic. The level stores a <em>tile id</em> like "34 = ? block". The renderer looks up the artwork through a small <b>slot table</b> indexed by the tile id and two bits of the frame counter, so the same id shows different artwork as time passes:</p>
+<figure class="fig" id="anim-fig">
+  <div class="anim-strip" id="anim-strip"></div>
+  <figcaption><b><code>slot = slots[{tile_id, frames[4:3]}]</code></b>: bits 3 and 4 of the frame counter change every 8 frames, so each animation step lasts 8/60 of a second.</figcaption>
+</figure>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Table</th><th>Shape</th><th class="num">Bits</th></tr></thead>
+  <tbody>
+    <tr><td>Tiles</td><td>64 slots × 16×16 px × 4 bits</td><td class="num">65,536</td></tr>
+    <tr><td>Sprites</td><td>32 frames × 16×16 px × 4 bits</td><td class="num">32,768</td></tr>
+    <tr><td>Title logo</td><td>256×64 px × 2 bits</td><td class="num">32,768</td></tr>
+    <tr><td>Level (live + pristine copy)</td><td>2 × 256×16 tiles × 6 bits</td><td class="num">49,152</td></tr>
+    <tr><td>Font</td><td>64 glyphs × 8×8 px × 1 bit</td><td class="num">4,096</td></tr>
+    <tr><td>Text strings and layout</td><td>512 characters + 256 row entries</td><td class="num">9,216</td></tr>
+    <tr><td>Palette</td><td>64 colours × 24 bits</td><td class="num">1,536</td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<!-- ============================================================ 2-1 -->
+<section id="level" class="col full">
+<p class="world"><i></i>World 2-1</p>
+<h2>The level is a grid of tile numbers</h2>
+<p>The course is a 256 × 16 grid of tile ids, 6 bits each, in a RAM called <code>plat_map</code>. The script builds it from commands like "pipe of height 4 at column 46" or "<code>#M#?#</code> at row 9". Only the ids are stored; the artwork is looked up while the picture is drawn.</p>
+<p>The tile ids are numbered so the game can tell solid from background by checking a single bit: <b>every id from 32 up is solid</b>. The whole collision rule in hardware is <code>solid = t[5]</code>, one wire with no comparison needed. Drag the minimap or the view to scroll, and try the overlays:</p>
+
+<figure class="fig wide" id="lvl-fig">
+  <canvas class="px minimap" id="lvl-mini" aria-label="Minimap of the whole level; drag to move the camera"></canvas>
+  <div class="screen"><canvas class="viewport" id="lvl-c" aria-label="The level at the camera position"></canvas></div>
+  <div class="ctrl">
+    <button class="chip" id="lvl-grid" aria-pressed="false">tile grid</button>
+    <button class="chip" id="lvl-solid" aria-pressed="false">solid (id ≥ 32)</button>
+    <button class="chip" id="lvl-ids" aria-pressed="false">tile ids</button>
+    <span class="spacer"></span>
+    <button class="btn" id="lvl-auto">Auto-scroll</button>
+  </div>
+  <div class="readout" id="lvl-r"></div>
+  <figcaption><b>The real level from the hex file.</b> The screen shows 320 of its 4,096 pixels at a time. Scrolling is just an addition, <code>wx = x/2 + cam_x</code>, done before the map lookup. Purple dots on the minimap are where slimes enter, and the pole at column 198 is the goal.</figcaption>
+</figure>
+</section>
+
+<!-- ============================================================ 2-2 -->
+<section id="pipeline" class="col full">
+<p class="world"><i></i>World 2-2</p>
+<h2>Drawing one pixel in 3 clocks</h2>
+<p>Block RAM gives its answer one clock after you give it an address, and some lookups depend on the result of another: you need the tile id before you can fetch the tile's pixel. So the renderer is a <b>pipeline</b>. It's split into stages with a register between each, like an assembly line. Each clock, every pixel moves one stage along and a new one comes in:</p>
+
+<ol>
+  <li><b>Clock 0, addresses.</b> Halve x and y (each game pixel is 2×2 on screen), add the camera to get the world position <code>wx</code>, and form the map address <code>{ly[7:4], wx[11:4]}</code>. Test whether any sprite covers this pixel, and find which text string, if any, sits on this row.</li>
+  <li><b>Clock 1, first reads.</b> The map returns the tile id. The sprite memory returns one pixel for Nano and one for the first other sprite that covers this point. The text memory returns a character code.</li>
+  <li><b>Clock 2, second reads.</b> The tile id and animation bits choose a slot, and the slot plus the position inside the tile give a 4-bit tile pixel. Placeholder characters become live score digits, and the font gives a row of 8 bits.</li>
+  <li><b>Clock 3, pick the colour.</b> Take the top non-transparent layer: text, then Nano, then other sprites, then the logo, then tiles. The palette turns that into 24-bit RGB.</li>
+</ol>
+
+<figure class="fig wide" id="pipe-fig">
+  <div class="screen"><canvas id="pipe-c" aria-label="Pipeline animation: pixels move through four stages, one stage per clock, and come out as a scanline."></canvas></div>
+  <div class="pipe-stages trace" id="pipe-stages" aria-live="off"></div>
+  <div class="ctrl">
+    <button class="btn" id="pipe-play">Pause</button>
+    <button class="btn" id="pipe-step">Step one clock</button>
+    <label class="range">Speed <input type="range" id="pipe-speed" min="1" max="40" value="3"><output id="pipe-speed-o"></output></label>
+  </div>
+  <figcaption><b>Four pixels in flight at once.</b> Each stage works on a different pixel in the same clock, so one finished colour comes out every clock even though each takes 3 clocks to make. The strip at the bottom is screen line 392 (game line 196) being assembled. It crosses Nano, a slime and a pipe. Click the strip to jump to another point on the line. <code>dvi_tx</code> delays its sync signals by the same 3 clocks so everything lines up.</figcaption>
+</figure>
+
+<h3>Inspect any pixel</h3>
+<p>Click anywhere on this screen to see the lookups that produced that pixel, using the same logic as the Verilog. The <code>?</code> blocks keep animating, so watch the slot number change:</p>
+
+<figure class="fig wide" id="insp-fig">
+  <div class="split">
+    <div>
+      <div class="screen"><canvas class="viewport" id="insp-c" aria-label="Click a pixel to inspect it"></canvas></div>
+      <div class="ctrl"><label class="range">camera <input type="range" id="insp-cam" min="0" max="3776" value="200"><output id="insp-cam-o"></output></label></div>
+      <div class="zoomrow" id="insp-zoom"></div>
+    </div>
+    <div class="trace" id="insp-trace" aria-live="polite"></div>
+  </div>
+  <figcaption><b>A software copy of <code>plat_render</code>.</b> The hardware does all of this for every pixel, 25.2 million times a second, spread across 3 clocks.</figcaption>
+</figure>
+
+<h3>The sprite test: one subtraction, no comparisons</h3>
+<p>Every pixel has to ask eleven sprites "do you cover me?". Written the obvious way that's four comparisons per sprite, and on this chip every comparison costs a chain of adder cells. The renderer uses a cheaper trick instead: subtract the sprite's corner from the pixel's position in 12-bit arithmetic, then check that the top 8 bits are all zero.</p>
+<figure class="fig">
+<pre style="margin:0">sprite at x = 100
+pixel 108:  dx = 108 − 100 =    8 = <b>0000 0000</b> 1000  → top bits zero: inside
+pixel  95:  dx =  95 − 100 =   −5 = <b>1111 1111</b> 1011  → wraps round: outside
+pixel 120:  dx = 120 − 100 =   20 = <b>0000 0001</b> 0100  → too far: outside</pre>
+<figcaption><b><code>covers = dx[11:4] == 0 &amp;&amp; dy[9:4] == 0</code>.</b> Negative distances wrap to huge numbers, so one test catches both edges. The low 4 bits of <code>dx</code> and <code>dy</code> are then the position inside the sprite.</figcaption>
+</figure>
+<p>The sprite memory has two read ports, so each pixel can fetch two sprite pixels per clock: one for Nano, and one for the first other sprite in a fixed order (coin pop, mushroom, slimes, brick chunks). If two slimes overlap, only the first shows in the overlap. That's a hardware limit, much like the NES's eight sprites per line, and in play you rarely notice it.</p>
+</section>
+
+<!-- ============================================================ 2-3 -->
+<section id="sprites" class="col full">
+<p class="world"><i></i>World 2-3</p>
+<h2>Sprites, big Nano and the mushroom</h2>
+<p>A sprite is just 27 bits of game state: a visible flag, a frame number, and a y and x position. The game packs Nano, four slimes, four brick chunks, the coin pop and the mushroom into wires that run to the renderer. Moving a sprite means changing a number.</p>
+<p><b>Big Nano</b> is 32 pixels tall but the sprite memory holds 16×16 frames, so big poses are stored as pairs from frame 16. The renderer uses a 32-row box test for the hero and picks the frame with one bit of the row inside the box: <code>hero_fr = {1, pose, dy[4]}</code>. Top half, bottom half, no extra memory port.</p>
+<p><b>The mushroom</b> rises out of its block like in the classics: it's drawn <em>behind</em> the block while it emerges. There's no layer system to do that, so the game sets <code>mush_clip</code> to the top edge of the block and the renderer hides mushroom pixels below that line. Turn the clip off to see what it's hiding:</p>
+
+<figure class="fig wide" id="mush-fig">
+  <div class="screen"><canvas id="mush-c" aria-label="Nano bumps a mushroom block; the mushroom rises, slides, bounces off a pipe and comes back; Nano grows."></canvas></div>
+  <div class="ctrl">
+    <button class="btn" id="mush-play">Pause</button>
+    <button class="btn" id="mush-replay">Replay</button>
+    <button class="chip" id="mush-clip" aria-pressed="true">mush_clip on</button>
+    <button class="chip" id="mush-slow" aria-pressed="false">slow motion</button>
+  </div>
+  <div class="readout" id="mush-r"></div>
+  <figcaption><b>A line-by-line JavaScript port of the game logic, running on the real level.</b> The mushroom rises 1&nbsp;px a frame for 16 frames, slides right at 1&nbsp;px a frame, drops off the bricks, turns round at the pipe and comes back. When Nano touches it, the game freezes for 48 frames while Nano flickers between sizes. Nano grows upwards, so the feet stay put.</figcaption>
+</figure>
+</section>
+
+<!-- ============================================================ 3-1 -->
+<section id="steps" class="col full">
+<p class="world"><i></i>World 3-1</p>
+<h2>The game runs between frames</h2>
+<p>A frame lasts 420,000 clocks. When the picture reaches the bottom of the screen, <code>dvi_tx</code> sends a one-clock <b>frame tick</b>, and the next 36,000 clocks are vertical blanking, with nothing drawn. The game needs about 41 of them:</p>
+
+<figure class="fig wide">
+<svg class="diagram" viewBox="0 0 900 250" role="img" aria-label="Frame budget: of 525 lines, 480 are visible and 45 are vertical blanking. Zooming into the first 64 clocks of blanking: the hero takes 15 clocks, four slimes take 20, the mushroom 6, and the game is idle for the remaining 35,959 clocks.">
+  <defs>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="currentColor" stroke-width="1" opacity=".35"/></pattern>
+  </defs>
+  <text x="20" y="22" class="lbl" style="font-family:var(--font-mono);letter-spacing:.08em">ONE FRAME: 525 LINES × 800 CLOCKS</text>
+  <rect x="20" y="32" width="786" height="36" rx="3" style="fill:var(--code-bg);stroke:currentColor;stroke-width:1"/>
+  <text x="413" y="55" text-anchor="middle">480 visible lines: the renderer is busy</text>
+  <rect x="806" y="32" width="74" height="36" rx="3" class="acc" opacity=".9"/>
+  <text x="843" y="86" text-anchor="middle" class="lbl">45 blank lines</text>
+  <path d="M806 68 L20 136 M808 68 L880 136" class="wire dash" opacity=".6"/>
+  <text x="20" y="128" class="lbl" style="font-family:var(--font-mono);letter-spacing:.08em">THE FIRST 64 CLOCKS OF BLANKING</text>
+  <rect x="20" y="138" width="201.6" height="40" style="fill:var(--accent);opacity:.9"/>
+  <rect x="221.6" y="138" width="268.8" height="40" style="fill:var(--purple);opacity:.85"/>
+  <rect x="490.4" y="138" width="80.6" height="40" style="fill:var(--gold);opacity:.9"/>
+  <rect x="571" y="138" width="309" height="40" fill="url(#hatch)" style="stroke:currentColor;stroke-width:1"/>
+  <text x="120.8" y="163" text-anchor="middle" style="fill:#fff;font-weight:600">Nano: 15</text>
+  <text x="356" y="163" text-anchor="middle" style="fill:#fff;font-weight:600">4 slimes × 5 = 20</text>
+  <text x="530.7" y="163" text-anchor="middle" style="fill:#fff;font-weight:600">mush: 6</text>
+  <text x="725.5" y="163" text-anchor="middle">idle for 35,959 more</text>
+  <path d="M20 184 V194 M221.6 184 V194 M490.4 184 V194 M571 184 V194" class="wire"/>
+  <text x="20" y="210" class="lbl">tick</text>
+  <text x="221.6" y="210" class="lbl" text-anchor="middle">15</text>
+  <text x="490.4" y="210" class="lbl" text-anchor="middle">35</text>
+  <text x="571" y="210" class="lbl" text-anchor="middle">41</text>
+  <text x="20" y="238" class="lbl">One clock is 39.7 ns, so the game's work for a frame is done 1.6 µs after the tick, 0.01% of the frame.</text>
+</svg>
+<figcaption><b>To scale, the game's work would be a hair-thin line.</b> Bumping a block adds 2 clocks. Everything else in the frame belongs to the renderer.</figcaption>
+</figure>
+
+<p>Why not do it all at once? Collisions need the level map: "is the tile ahead of Nano's feet solid?" The map has one port for the game, and it answers one question per clock, two clocks after you ask. So the game is written as a <b>step machine</b>, one small step per clock, each one asking the map a question or using an answer that just arrived. Step through one real frame: big Nano is falling and running right, towards a block and a coin:</p>
+
+<figure class="fig wide" id="sm-fig">
+  <div class="split">
+    <div>
+      <div class="screen"><canvas id="sm-c" aria-label="Zoomed view of Nano with the probe points for the current step."></canvas></div>
+      <div class="port" id="sm-port" aria-label="Map port"></div>
+      <div class="ctrl">
+        <button class="btn" id="sm-prev">◀ Back</button>
+        <button class="btn primary" id="sm-play">Play</button>
+        <button class="btn" id="sm-next">Step ▶</button>
+      </div>
+    </div>
+    <ol class="steps" id="sm-list"></ol>
+  </div>
+  <figcaption><b>The map port is a 2-clock pipeline</b>, shown under the picture. An address set in step <i>n</i> comes back as data in step <i>n</i>+2. The step machine keeps two questions in flight so it never waits. Where it has to (steps 11 and 14), it just waits a clock.</figcaption>
+</figure>
+
+<p>Checking three points along the leading edge matters. Big Nano is 28 pixels tall, so a one-tile block can slip between the head and feet probes. That's why there's a third, middle probe at +14. The game also moves Nano first and asks questions afterwards. It guesses the new position, and if a probe lands inside something solid, it snaps back to the tile boundary: <code>{xr[11:4], 4'd0} − 12</code>. Snapping is just clearing the low 4 bits.</p>
+
+<pre class="v">6'd7: begin
+    t2 = map_rd;                                    // floor, right side
+    if (vy &gt;= 0) begin
+        if (solid(t1) || solid(t2)) begin
+            feet = nyp + hh;                        // stand on top of that tile
+            nyp  = {feet[11:4], 4'd0} - hh;
+            ny   = {nyp, 4'd0};
+            vy  &lt;= 9'sd0;
+            on_ground &lt;= 1'b1;
+        end else
+            on_ground &lt;= 1'b0;
+    end else begin
+        on_ground &lt;= 1'b0;                          // rising: in the air
+        if (solid(t1) || solid(t2)) begin           // hit a block from below
+            bump = 1'b1;
+            ...</pre>
+<p class="codecap">Step 7 of <code>plat_game</code>: landing, or bumping your head.</p>
+</section>
+
+<!-- ============================================================ 3-2 -->
+<section id="physics" class="col full">
+<p class="world"><i></i>World 3-2</p>
+<h2>Physics in sixteenths of a pixel</h2>
+<p>Whole pixels are too coarse for good movement: the slowest speed would be 60 pixels a second. So every position and speed is <b>fixed-point</b>, counted in 1/16ths of a pixel. The renderer just drops the low 4 bits. The whole feel of the game comes down to a handful of constants:</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Constant</th><th class="num">Value</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>ACC</code> / <code>DEC</code></td><td class="num">2 / 4</td><td>speed up 1/8 px per frame each frame while S2 is held; slow down twice as fast</td></tr>
+    <tr><td><code>VMAX</code></td><td class="num">36</td><td>top running speed: 2.25 px per frame, 135 px per second</td></tr>
+    <tr><td><code>JUMP_V</code></td><td class="num">84</td><td>launch speed: 5.25 px per frame upwards</td></tr>
+    <tr><td><code>GRAV</code></td><td class="num">8</td><td>gravity: 0.5 px per frame, every frame</td></tr>
+    <tr><td><code>GRAV_HOLD</code></td><td class="num">3</td><td>gravity while S1 is held and Nano is still rising</td></tr>
+    <tr><td><code>VY_MAX</code></td><td class="num">96</td><td>fastest fall: 6 px per frame</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><code>GRAV_HOLD</code> is the secret of the variable-height jump: while you hold the button on the way up, gravity is less than half as strong. Let go and it snaps back to normal. That's why a tap gives a hop and a hold gives a leap. Try it:</p>
+
+<figure class="fig wide" id="lab-fig" tabindex="0" aria-label="Jump lab. Focus it, then hold Space or Up to jump and Right to run.">
+  <div class="screen"><canvas id="lab-c" aria-label="Nano on flat ground with jump trails"></canvas></div>
+  <canvas id="lab-plot" style="display:block;width:100%;height:130px;margin-top:10px" aria-label="Graph of vertical speed over time"></canvas>
+  <div class="ctrl">
+    <button class="btn big primary" id="lab-jump">S1 · jump (hold)</button>
+    <button class="btn big" id="lab-run">S2 · run (hold)</button>
+    <button class="btn" id="lab-demo">Demo: tap vs hold</button>
+    <button class="btn" id="lab-clear">Clear trails</button>
+  </div>
+  <div class="readout" id="lab-r"></div>
+  <figcaption><b>The real equations, one frame at a time.</b> Hold the buttons, or click the scene and use <kbd>Space</kbd>/<kbd>↑</kbd> to jump and <kbd>→</kbd> to run. Dots are one frame apart: blue while S1 is held on the way up (weak gravity), orange otherwise. The graph shows vertical speed in 1/16&nbsp;px per frame. It climbs by 8 each frame, or by 3 while you hold on the way up, and levels off at the 96 cap.</figcaption>
+</figure>
+
+<p>A tap rises about 28&nbsp;px, less than two tiles. A full hold rises about 71&nbsp;px, four and a half tiles, and stays in the air twice as long. Two more details from the Verilog:</p>
+<ul>
+  <li><b>Jumps need a fresh press.</b> The game remembers last frame's button (<code>jump_prev</code>) and only jumps on a press, so holding S1 doesn't bunny-hop.</li>
+  <li><b>Standing is falling a little.</b> Gravity pulls a standing Nano half a pixel into the floor every frame, and the floor check pulls it back to the tile's top edge. Standing and landing are the same code.</li>
+</ul>
+</section>
+
+<!-- ============================================================ 3-3 -->
+<section id="bricks" class="col full">
+<p class="world"><i></i>World 3-3</p>
+<h2>A level you can break</h2>
+<p>The level map is live memory with <b>two ports</b>. Block RAM on this chip can serve two addresses per clock, so the renderer and the game never wait for each other:</p>
+
+<figure class="fig wide">
+<svg class="diagram" viewBox="0 0 900 230" role="img" aria-label="Dual-port level map: plat_render reads tile ids through port A for every pixel; plat_game reads collision probes and writes changes through port B; a pristine ROM copy is copied back into the RAM over 4096 clocks whenever a life or world starts.">
+  <defs>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="box" x="20" y="60" width="170" height="80" rx="7"/>
+  <text x="105" y="95" text-anchor="middle" class="title">plat_render</text>
+  <text x="105" y="114" text-anchor="middle" class="sub">every pixel</text>
+  <rect class="box hot" x="330" y="50" width="240" height="100" rx="7"/>
+  <text x="450" y="88" text-anchor="middle" class="title">level RAM</text>
+  <text x="450" y="107" text-anchor="middle" class="sub">4,096 tiles × 6 bits</text>
+  <text x="450" y="124" text-anchor="middle" class="sub">16 rows × 256 columns</text>
+  <rect class="box" x="710" y="60" width="170" height="80" rx="7"/>
+  <text x="795" y="95" text-anchor="middle" class="title">plat_game</text>
+  <text x="795" y="114" text-anchor="middle" class="sub">once per frame</text>
+  <path class="wire" d="M326 100 H194" marker-end="url(#ah3)"/>
+  <text x="260" y="90" text-anchor="middle" class="lbl">port A: read</text>
+  <path class="wire hot" d="M706 100 H574" marker-start="url(#ah3)" marker-end="url(#ah3)" style="color:inherit"/>
+  <text x="640" y="90" text-anchor="middle" class="lbl">port B: read + write</text>
+  <rect class="box" x="360" y="186" width="180" height="36" rx="7"/>
+  <text x="450" y="209" text-anchor="middle" class="sub">pristine copy (ROM)</text>
+  <path class="wire" d="M450 186 V154" marker-end="url(#ah3)"/>
+  <text x="462" y="174" class="lbl">copied back over 4,096 clocks at each new life</text>
+  <text x="640" y="130" text-anchor="middle" class="lbl">coin → sky</text>
+  <text x="640" y="146" text-anchor="middle" class="lbl">? → used, brick → sky</text>
+</svg>
+<figcaption><b>Changing the level is one memory write.</b> Grab a coin and the game writes <i>sky</i> over it. The renderer draws the next frame from the same RAM, so the coin is simply gone. At the start of each life, while the black "WORLD 1-1" card shows, a small copier restores the whole level from a pristine copy.</figcaption>
+</figure>
+
+<p>Breaking a brick works the same way. When a head-bump reaches step 9 and the tile above is a brick, the game writes <code>T_SKY</code> into the map, adds 50 points and launches four <b>chunks</b>, one from each corner. Each chunk is its own small physics object: ±1.25&nbsp;px per frame sideways, thrown up at 4.5 or 2.5&nbsp;px per frame, with gravity of 6/16.</p>
+<p>The first version had a bug that showed up on the real monitor: the chunks <b>bounced</b>. Each chunk's vertical speed was an 8-bit signed number, and nothing stopped it growing. About half a second after the break it passed +127 and wrapped round to about −125, and the chunk shot back up, sometimes more than once. The hero and slimes already had a speed cap; the chunks didn't. Toggle the bug back on:</p>
+
+<figure class="fig wide" id="brick-fig">
+  <div class="screen"><canvas id="brick-c" aria-label="Nano jumps into a brick, which breaks into four chunks."></canvas></div>
+  <div class="ctrl">
+    <button class="btn" id="brick-play">Pause</button>
+    <button class="btn" id="brick-replay">Replay</button>
+    <button class="chip" id="brick-bug" aria-pressed="false">bring back the 8-bit wrap bug</button>
+  </div>
+  <div class="readout" id="brick-r"></div>
+  <figcaption><b>The fix is one line:</b> <code>vy &gt; 90 ? 96 : vy + 6</code>. The dotted lines trace each chunk's path. With the bug on, watch the readout: the speed climbs past +127, wraps round to a large negative number, and the chunk flies back up.</figcaption>
+</figure>
+</section>
+
+<!-- ============================================================ 3-4 -->
+<section id="sound" class="col full">
+<p class="world"><i></i>World 3-4</p>
+<h2>Sound from one pin</h2>
+<p>The sound hardware is a counter and a flip-flop. The counter counts pixel clocks, and when it reaches the note's <b>half period</b> it resets and flips pin 25. That makes a square wave at <code>25.2 MHz ÷ (2 × (half + 1))</code>, the same kind of raw buzz as the NES's pulse channels. A small piezo buzzer between pin 25 and ground plays it.</p>
+<p>Each effect is a table of up to four notes, each with a half period and a length in frames. Click to hear them. Your browser plays the same square waves at the same pitches and lengths:</p>
+
+<figure class="fig wide" id="sfx-fig">
+  <div class="sfx-grid" id="sfx-grid"></div>
+  <div class="readout" id="sfx-r">Click an effect.</div>
+  <figcaption><b>The whole sound engine is a 34-row note table and a counter.</b> The coin is a B5 then an E6, the classic two-note coin. The brick crunch gets its roughness from quick jumps between low pitches, and the "die" effect is four falling notes.</figcaption>
+</figure>
+
+<pre class="v">{4'd2, 2'd0}: note = {16'd12753, 6'd4};     // coin: B5 for 4 frames
+{4'd2, 2'd1}: note = {16'd9553,  6'd14};    //       E6 for 14 frames
+...
+if (cnt &gt;= cur[21:6]) begin cnt &lt;= 16'd0; out &lt;= ~out; end
+else cnt &lt;= cnt + 1'b1;</pre>
+<p class="codecap">From <code>plat_sfx</code>. The game starts an effect by putting its number on the 4-bit <code>sfx</code> wire for one clock.</p>
+</section>
+
+<!-- ============================================================ 4-1 -->
+<section id="testing" class="col full">
+<p class="world"><i></i>World 4-1</p>
+<h2>Testing without seeing the screen</h2>
+<p>NANO QUEST was written by Claude, an AI, working over SSH. The board is plugged into a Linux machine, and the monitor sits on a desk Claude can't see. So nearly everything was proven in simulation before it went near the chip. <a href="https://steveicarus.github.io/iverilog/">Icarus Verilog</a> runs the actual <code>platformer.v</code> clock by clock.</p>
+
+<h3>A bot plays the game</h3>
+<p><a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/platformer/plat_bot.vh"><code>plat_bot.vh</code></a> is a player written in the testbench. It reads the game's state and the level map, the same things a person sees on screen, and presses the buttons: always run, and jump (holding for a high jump) when there's a wall, a pit or a slime ahead. It lets go of S1 on landing so the next jump is a fresh press. The test first steers Nano under the first mushroom block and waits for the mushroom, then plays World 1-1 as big Nano and World 1-2 small. It passes only if both worlds are cleared.</p>
+<p>After every simulated frame the testbench checks:</p>
+<ul class="checks">
+  <li>Nano is never inside a solid tile.</li>
+  <li>Nano never starts a jump while in the air.</li>
+  <li>Nano never loses the ground while standing on something.</li>
+  <li>A smashed brick is really gone from the level RAM.</li>
+  <li>Growing keeps Nano's feet where they were, and shrinking only happens to big Nano and never costs a life.</li>
+  <li>The mushroom appears exactly once and gets eaten.</li>
+</ul>
+<p>In the latest run the mushroom is eaten on frame 352 and both worlds are cleared with no deaths.</p>
+
+<h3>Bugs the tests caught</h3>
+<div class="bugs">
+  <div class="bug">
+    <h4><span>mid-air jump</span>Double jumps</h4>
+    <p>The <code>on_ground</code> flag was only updated while falling. On the way up it kept its old value, 1, so a second press in mid-air counted as a jump from the ground and could launch Nano off the top of the screen. The fix is the <code>on_ground &lt;= 1'b0</code> in the rising branch of step 7 above.</p>
+  </div>
+  <div class="bug">
+    <h4><span>ground check</span>Airborne every other frame</h4>
+    <p>The floor probe first looked at Nano's own bottom row of pixels instead of the row just below the feet. Gravity pulls a standing Nano down half a pixel per frame, so the whole-pixel position only changes every other frame. On alternate frames the probe saw sky, and Nano briefly counted as falling. That would have made jumps work only half the time.</p>
+  </div>
+  <div class="bug">
+    <h4><span>8-bit overflow</span>Bouncing brick chunks</h4>
+    <p>The chunk speed wrap in <a href="#bricks">World 3-3</a>. That one got past the tests and was spotted on the real monitor. The fix was a speed cap, and the page's brick demo shows both versions.</p>
+  </div>
+  <div class="bug">
+    <h4><span>bit widths</span>A sprite word that didn't fit</h4>
+    <p>The mushroom's sprite word is 27 bits: visible, frame, 10-bit y, 12-bit x. The first version put a 16-bit y into it. Verilog silently keeps the low 27 bits of a too-wide value, which would have lost the visible flag and frame number. It was fixed by taking <code>dyp[9:0]</code>.</p>
+  </div>
+  <div class="bug">
+    <h4><span>bit widths</span>A bump that beeped</h4>
+    <p>The bump sound's half period was first 84,000, which doesn't fit in the 16-bit field. It would have wrapped to 18,464, a high 680&nbsp;Hz beep instead of a low thud. Now it's 63,000, a 200&nbsp;Hz thump.</p>
+  </div>
+</div>
+
+<h3>Pictures from the simulator</h3>
+<p>Frames from the simulation, like the title screen, the world card, breaking a brick or big Nano, are saved as PNGs to check by eye. The GIF at the top of this page is made the same way. <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/platformer/plat_gif_tb.v"><code>plat_gif_tb.v</code></a> runs the bot and dumps chosen frames, and <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/hdmi/platformer/plat_gif.py"><code>plat_gif.py</code></a> splits the recording across all CPU cores and stitches the result. Everything you see there came out of the same Verilog that's on the chip.</p>
+</section>
+
+<!-- ============================================================ 4-2 -->
+<section id="build" class="col full">
+<p class="world"><i></i>World 4-2</p>
+<h2>From Verilog to the chip</h2>
+<p>The build uses an entirely open-source toolchain, with no vendor IDE:</p>
+
+<figure class="fig wide">
+<svg class="diagram" viewBox="0 0 900 250" role="img" aria-label="Build flow: platformer_gen.py writes hex files; Yosys synthesises platformer.v and the hex files into LUTs, adders, flip-flops and block RAMs; nextpnr places and routes and checks timing at 25.2 MHz; gowin_pack from Apicula writes the bitstream; openFPGALoader sends it over USB to the FPGA or its flash. Separately, Icarus Verilog runs the same Verilog with the bot testbench.">
+  <defs>
+    <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <rect class="box" x="10" y="30" width="130" height="70" rx="7"/>
+  <text x="75" y="56" text-anchor="middle" class="title">generator</text>
+  <text x="75" y="74" text-anchor="middle" class="sub">platformer_gen.py</text>
+  <text x="75" y="89" text-anchor="middle" class="sub">art, level, text</text>
+  <path class="wire" d="M140 65 H156" marker-end="url(#ah4)"/>
+  <rect class="box" x="160" y="30" width="130" height="70" rx="7"/>
+  <text x="225" y="56" text-anchor="middle" class="title">*.hex</text>
+  <text x="225" y="74" text-anchor="middle" class="sub">RAM and ROM</text>
+  <text x="225" y="89" text-anchor="middle" class="sub">contents</text>
+  <path class="wire" d="M290 65 H306" marker-end="url(#ah4)"/>
+  <rect class="box hot" x="310" y="30" width="130" height="70" rx="7"/>
+  <text x="375" y="56" text-anchor="middle" class="title">Yosys</text>
+  <text x="375" y="74" text-anchor="middle" class="sub">Verilog → LUTs,</text>
+  <text x="375" y="89" text-anchor="middle" class="sub">adders, RAMs</text>
+  <path class="wire" d="M440 65 H456" marker-end="url(#ah4)"/>
+  <rect class="box hot" x="460" y="30" width="130" height="70" rx="7"/>
+  <text x="525" y="56" text-anchor="middle" class="title">nextpnr</text>
+  <text x="525" y="74" text-anchor="middle" class="sub">place, route,</text>
+  <text x="525" y="89" text-anchor="middle" class="sub">check ≥ 25.2 MHz</text>
+  <path class="wire" d="M590 65 H606" marker-end="url(#ah4)"/>
+  <rect class="box" x="610" y="30" width="130" height="70" rx="7"/>
+  <text x="675" y="56" text-anchor="middle" class="title">gowin_pack</text>
+  <text x="675" y="74" text-anchor="middle" class="sub">Apicula:</text>
+  <text x="675" y="89" text-anchor="middle" class="sub">bitstream .fs</text>
+  <path class="wire" d="M740 65 H756" marker-end="url(#ah4)"/>
+  <rect class="box" x="760" y="30" width="130" height="70" rx="7"/>
+  <text x="825" y="56" text-anchor="middle" class="title">openFPGALoader</text>
+  <text x="825" y="74" text-anchor="middle" class="sub">USB → SRAM</text>
+  <text x="825" y="89" text-anchor="middle" class="sub">or flash</text>
+
+  <rect class="box" x="160" y="160" width="130" height="60" rx="7"/>
+  <text x="225" y="186" text-anchor="middle" class="title">platformer.v</text>
+  <text x="225" y="204" text-anchor="middle" class="sub">+ HDMI core</text>
+  <path class="wire" d="M225 160 V130 H375 V104" marker-end="url(#ah4)"/>
+  <text x="300" y="124" text-anchor="middle" class="lbl">synthesis</text>
+  <path class="wire" d="M290 190 H456" marker-end="url(#ah4)"/>
+  <text x="373" y="182" text-anchor="middle" class="lbl">simulation</text>
+  <rect class="box" x="460" y="160" width="280" height="60" rx="7"/>
+  <text x="600" y="186" text-anchor="middle" class="title">Icarus Verilog</text>
+  <text x="600" y="204" text-anchor="middle" class="sub">bot testbench → PASS, PNG frames, GIF</text>
+</svg>
+<figcaption><b>One Makefile runs all of it.</b> <code>make sim</code> runs the bot and renders test frames, <code>make</code> builds the bitstream, and <code>make flash</code> writes it to the board so the game starts at power-up.</figcaption>
+</figure>
+
+<p>Where it ended up on the GW1NR-9:</p>
+<div class="bars" role="list">
+  <div class="bar" role="listitem"><span>LUT4</span><div class="track"><div class="fill" style="width:34.8%"></div></div><span class="v">3,007 / 8,640</span></div>
+  <div class="bar" role="listitem"><span>adder cells</span><div class="track"><div class="fill" style="width:38.7%"></div></div><span class="v">2,506 / 6,480</span></div>
+  <div class="bar" role="listitem"><span>flip-flops</span><div class="track"><div class="fill" style="width:18.9%"></div></div><span class="v">1,225 / 6,480</span></div>
+  <div class="bar" role="listitem"><span>block RAM</span><div class="track"><div class="fill" style="width:61.5%"></div></div><span class="v">16 / 26</span></div>
+  <div class="bar" role="listitem"><span>max clock</span><div class="track"><div class="fill" style="width:100%;background:var(--green)"></div></div><span class="v">36.3 MHz</span></div>
+</div>
+<p>nextpnr reports the design would run at up to 36.3&nbsp;MHz, and it only needs 25.2, so there's room for more worlds and enemies. A few lessons from getting there:</p>
+<ul>
+  <li><b>Comparisons are expensive.</b> On this chip, each <code>&lt;</code> or <code>&gt;</code> between two numbers becomes a chain of adder cells. That's why adder cells are the most used logic resource, and why the renderer uses bit tests like the sprite trick above wherever it can.</li>
+  <li><b>Keep scores in decimal.</b> The score, coins and timer are stored as BCD, one 4-bit nibble per decimal digit. The HUD can then show a digit by picking a nibble, with no division hardware at all.</li>
+  <li><b>Check the clock routing.</b> The 126&nbsp;MHz clock must reach the divider over a dedicated route, or the serialisers' clocks can drift out of line and the monitor shows nothing. The placer's random seed decides this, so the Makefile greps nextpnr's log and fails the build if the route wasn't used.</li>
+</ul>
+</section>
+
+<footer class="col full">
+  <div>
+    <p><b>NANO QUEST</b> runs on a <a href="https://wiki.sipeed.com/hardware/en/tang/Tang-Nano-9K/Nano-9K.html">Sipeed Tang Nano 9K</a>. All the source, the art generator and the tests are at <a href="https://github.com/stephenkingston/tang-nano-9k">github.com/stephenkingston/tang-nano-9k</a>.</p>
+    <p>The interactive parts of this page use the game's real tiles, sprites, font and level, copied from the generator's output by <a href="https://github.com/stephenkingston/tang-nano-9k/blob/main/docs/page_data.py"><code>docs/page_data.py</code></a>, and JavaScript ports of the renderer and game logic.</p>
+  </div>
+</footer>
+
+</main>
+
+<button class="btn soundtoggle" id="sound-toggle" aria-pressed="false">♪ sound off</button>
+
+<script id="game-data" type="application/json">{"palette":["6b8cff","000000","ffffff","c84c0c","6e2208","fcbc90","f8a030","a85010","9ce030","10a820","005010","3cbcfc","fce058","0c6c18","b8b8c8","303038","000000","100810","fcc898","f06018","2858e8","703810","ffffff","fce040","a840e8","581888","dc98fc","f8b810","a06000","fff4b0","c84c0c","6e2208","c84c0c","fce8c8","301004","000000","ffffff","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000","000000"],"tiles":"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000077770000000000077777700000000077cccc77000000077c2cccc7700000077c2cccc770000007cccccccc70000007cccccccc700000077cccccc7700000077cccccc77000000077cccc770000000007777770000000000077770000000000000000000000000000000000000000000000000000000000000000000000000000077000000000000077770000000000007cc70000000000072ccc7000000000072ccc700000000007cccc700000000007cccc700000000007cccc700000000007cccc7000000000007cc70000000000007777000000000000077000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000077000000000000007700000000000000cc00000000000000cc00000000000000cc00000000000000cc00000000000000cc00000000000000cc00000000000000770000000000000077000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000077000000000000077770000000000007cc70000000000072ccc7000000000072ccc700000000007cccc700000000007cccc700000000007cccc700000000007cccc7000000000007cc7000000000000777700000000000007700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000012000000000000001200000000000001220000000000000122000000000000112200000000011121220000000112222222000000122222222200000122222222220000000000000000000000001000000000001111211110000011222222222110012222222222222112222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000210000000000000022100000000000002210000000000000222110000000000022212111100000002222222221000000222222222210000022222222222100002222222222221000222222222222210000000122222222220000122222222222000012222222222200001222222222220001222222222222000012222222222200001222222222220000122222222222000001b2b2b2b2b20000012b2b2b2b2b0000001bbbbbbbbb000000011bbbbbbb000000000111bbbb00000000000011110000000000000000000000000000000022222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222b2b2b2b2b2b2b2b22b2b2b2b2b2b2b2bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb11111111111111110000000000000000000000000000000022222222222221002222222222222100222222222222210022222222222222102222222222222100222222222222210022222222222221002222222222222100b2b2b2b2b2b210002b2b2b2b2b210000bbbbbbbbbb100000bbbbbbbbb1000000bbbbb11110000000111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000190000000000000199000000000000199900000000000199990000000000199999000000000199999900000000000000000000000000000000000000000011111100000001119999990000011999999999000119999999999900199999999999990199999999999999199999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999990000000000000000000000000000000011111100000000009999991110000000999999999110000099999999999110009999999999999100999999999999991099999999999999919999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000091000000000000009910000000000000999100000000000099991000000000009999910000000000999999100000000000000000019999990000000019999999000000019999999900000001999999990000001999999999000000199999999900000199999999990000019999999999000001999999999900001999999999990000199999999999000199999999999900019999999999990001999999999999001999999999999900199999999999999999999999999999999999999999999999999999dd99999999999999ddd9999999999999dd99999999999999ddd99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999dd99999999999999ddd9999999999999dd99999999999999ddd999999999999999999999999999999999999999999999999999999999999999999999999999999991000000000999999910000000099999999100000009999999910000000999999999100000099999999910000009999999999100000999999999910000099999999991000009999999999910000999999999991000099999999999910009999999999991000999999999999100099999999999991009999999999999100001999999999999900199999999999990199999999999999019999999999999901999999999999990199999999999999019999999999999901999999999999991999999999999999199999999999999919999999999999991999999999999999199999999999999919999999999999991999999999999999199999999999999999999999999999999999999999999999999dd99999999999999ddd9999999999999dd99999999999999ddd99999999999999999999999dd99999999999999ddd9999999999999dd99999999999999ddd99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999dd99999999999999ddd9999999999999dd99999999999999ddd9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999991009999999999999100999999999999991099999999999999109999999999999910999999999999991099999999999999109999999999999910999999999999999199999999999999919999999999999991999999999999999199999999999999919999999999999991999999999999999199999999999999910000000000000001000000000000011800000000000018880000000010018888000001118111888800001888888888880001888888899999001888888889999901888888889999990199999999999999019999999999999919999999999999990199999999999999019999999999999901999999999999990019999999999919118111000001118188888811011888888888888818888888888888888888888888888888888888888888888888888888999998888888999999998888888889999998888888888899998888888888888999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999911000000000000008811000000000000888810000000000088888100100000008888811181110000888888888888100099998888888881009998888888888810998888888888888199999999999999919999999999999991999999999999999999999999999999919999999999999991999999999999999199199999999999100000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000ef00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111000000000188899910000000018889991000000019888999910000001999999991000000199999999100000001999999100000000199999910000000001111110000000000000000000000000000000000000000000000000000000000000000000220000000000002222000000000022222200000000222222220000002222222222000022222299222200222222299992220022222222992222000022222222222200000022222222220000000022222222000000000022222200000000000022220000000000000022000000000000000055555554555555543333333433333334333333343333333444444444444444445554555555545555333433333334333333343333333433334444444444444444555555545555555433333334333333343333333433333334444444444444444455545555555455553334333333343333333433333334333344444444444444445555000055550000333300003333000033330000333300004444000044440000555400005554000033340000333400003334555533345555444444444444444455555554555555543333333433333334333333343333333444444444444444445554555555545555333433333334333333343333333433334444444444444444555555545555555433333311113333343333111111113334444411111111444455511111111115553331111111111333333111111111133344411111111114445551111111111554333111111111133433311111111113344441111111111444555111111111155533311111111113333331111111111333444111111111144455555554555555543333333433333334333333343333333444444111111444445554511111145555333431111114333333343111111433334444411111144444555551111115555433333111111333343333311111133334444441111114444455545555555455553334333333343333333433333334333344444444444444445555555555555554533333433333333453333343333333345333334533333434533334533333334453334533333333345333433333333334533333333343333453333333333433345333333333343334534533333334533453343333333333345334533333333334533333333333333453333333333333344444444444444444555555545555555433333334333333343333333433333334444444444444444455545555555455553334333333343333333433333334333344444444444444445555555455555554333333343333333433333334333333344444444444444444555455555554555533343333333433333334333333343333444444444444444477777777777777717666666666666661767666666666676176666cccc66666617666cc77cc6666617666cc76cc7666617666677cc7766661766666cc776666617666666776666661766666cc6666666176666667766666617666666666666661766666666666666176766666666667617666666666666661111111111111111177777777777777717666666666666661767666666666676176666cccc66666617666cc77cc6666617666cc76cc7666617666677cc7766661766666cc776666617666666776666661766666cc6666666176666667766666617666666666666661766666666666666176766666666667617666666666666661111111111111111177777777777777717cccccccccccccc17c7cccccccccc7c17cccc2222cccccc17ccc227722ccccc17ccc227c227cccc17cccc772277cccc17ccccc2277ccccc17cccccc77cccccc17ccccc22ccccccc17cccccc77cccccc17cccccccccccccc17cccccccccccccc17c7cccccccccc7c17cccccccccccccc11111111111111111777777777777777177777777777777717777777777777771777776666777777177776677667777717777667766777771777777766777777177777766777777717777777777777771777777667777777177777777777777717777777777777771777777777777777177777777777777717777777777777771111111111111111144444444444444444777777777777774474777777777747447777777777777744777777777777774477777777777777447777777777777744777777777777774477777777777777447777777777777744777777777777774477777777777777447777777777777744747777777777474477777777777777444444444444444444444444444444444435555555555553445355555555553444553555555553444455533333333444445553333333344444555333333334444455533333333444445553333333344444555333333334444455533333333444445553333333344444553444444443444453444444444434443444444444444344444444444444444aaaaaaaaaaaaaaaaa998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999a998898998999999aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aa9999999999999a9a999999999999a9aaaaaaaaaaaaaaaaaa00a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a998898998999900a99889899899999999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a009999999999a9aa0099999999999a9a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","slots":[0,0,0,0,1,2,3,4,5,5,5,5,6,6,6,6,7,7,7,7,8,8,8,8,9,9,9,9,10,10,10,10,11,11,11,11,12,12,12,12,13,13,13,13,14,14,14,14,15,15,15,15,16,16,16,16,17,17,17,17,18,18,18,18,19,19,19,19,20,20,20,20,21,21,21,21,22,22,22,22,23,23,23,23,24,24,24,24,25,25,25,25,26,26,26,26,27,27,27,27,28,28,28,28,29,29,29,29,30,30,30,30,31,31,31,31,32,32,32,32,0,0,0,0,0,0,0,0,33,33,33,33,34,34,34,34,35,36,37,38,39,39,39,39,40,40,40,40,41,41,41,41,42,42,42,42,43,43,43,43,44,44,44,44,35,36,37,38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"sprites":"000000770000000000000111100000000000133333100000000133333331000000113333333110000015511111110000001522261261000000152222121100000012222222210000000122221110000000001444441000000001447444410000001244444742100000121444441210000001155155110000000133111331000000000077000000000000011110000000000013333310000000013333333100000011333333311000001551111111000000152226126100000015222212110000001222222221000000012222111000000000144444100000000144744441100000124444474421000001144444111000001331551551000000111000133100000000007700000000000001111000000000001333331000000001333333310000001133333331100000155111111100000015222612610000001522221211000000122222222100000001222211100000000014444410000000014274444100000001444447410000000114444411000000001551551000000000133133100000000000770000000000000111100000000000133333100000000133333331000000113333333110000015511111110000001522261261000000152222121100000012222222210000000122221110000000001444441000000011447444410000012444444741000000111444441100000000155155133100000133100011100000000077000000000000011110000000000013333310000000013333333100000011333333311000001551111111000000152226126100000015222212110000001222222221000000012222111000000120144444102100001144744441100000001444447100000000144444410000000155101551310000133100001110000000007700000000000001111000000000001333331000000011333333311000012011111110210001201212211021000010126262101000000012212210000000001211121000000001444444410000001447444744100000144444444410000001551015510000000155101551000000133100013310000011100000111000000000000000000000000000000000000000000000000000000000000000000000000011110000000000118aa811000000018aa8888910000018a8888888910000186618866191000188611886118910018888888888891001888111118889100198888888888910019999999999991000111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111100000000118aaa88110000018aa8888889100018a86618866191001886118861189101888888888888891188888111188899119888888888899911999999999999991011111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000011111111000000118aa88888110001861888861889101999999999999991011111111111111000000000000000000000000000000000000000000000000000000cccccc000000000cccbbccc00000000cddbbbbc0000000ccddbbbbcc000000cdddbbbbbc000000cdddbbbbbc000000cbbbbbbbbc000000cbbbbbbbbc000000ccbbbbbbcc0000000cbbbbbbc00000000cccbbccc000000000cccccc000000000000000000000000000000000000000000000000000000000000000000000000000cccc000000000000cbbc00000000000cdbbbc0000000000cdbbbc0000000000cdbbbc0000000000cdbbbc0000000000cbbbbc0000000000cbbbbc0000000000cbbbbc0000000000cbbbbc00000000000cbbc000000000000cccc00000000000000000000000000000000000000000000000000000000000000000000000000000cc00000000000000cc00000000000000bb00000000000000bb00000000000000bb00000000000000bb00000000000000bb00000000000000bb00000000000000bb00000000000000bb00000000000000cc00000000000000cc00000000000000000000000000000000000000000000000000000000000000000000000000000cccc000000000000cbbc00000000000cdbbbc0000000000cdbbbc0000000000cdbbbc0000000000cdbbbc0000000000cbbbbc0000000000cbbbbc0000000000cbbbbc0000000000cbbbbc00000000000cbbc000000000000cccc000000000000000000000000000000000000000dddddf000000000deeeeeef00000000deeeeeef00000000ffffffff00000000eeefdeee00000000eeefdeee00000000eeefdeef000000000ffffff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000111111000000001133663311000001333666633310001366336633663100136633333366310133333333333333113366333333366311113333333333111001111111111110000012222222210000001221221210000000122122121000000012222222210000000111111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007700000000000001111000000000001333331000000001333333310000001133333331100000155111111100000015222612610000001522221211000000122222222100000001222211100000000111444411100000144444444441000144444744444410014444444444441012244444444442211224444474444221122444444444422101144444444441100014444474444100001444444444410000155555555551000015555555555100001555511555510000155510015551000015551001555100001555100155510000155510015551000015551001555100013333310133333101333331013333310111111000111111000000000000000000000077000000000000011110000000000013333310000000013333333100000011333333311000001551111111000000152226126100000015222212110000001222222221000000012222111000000001114444111000001444444444411001444447444444210144444444444221122444444444411012244444744441000114444444444100001444444444410000144444744441000014444444444100001555555555510000155555555555100155551101555510015551000015551015551000000155101555100000015551155100000000155113310000000013311333100000001333111110000000111100000000000000000000000000000000000000770000000000000111100000000000133333100000000133333331000000113333333110000015511111110000001522261261000000152222121100000012222222210000000122221110000000011144441110000014444444444100014444474444441001444444444444100124444444444210012444447444421000144444444441000014444444444100001444447444410000144444444441000015555555555100001555555555510000015551155510000001555115551000000155511555100000015551155510000001551001551000000133310133310000013331013331000001111101111100000000000000000000000000000000000000007700000000000001111000000000001333331000000001333333310000001133333331100000155111111100000015222612610000001522221211000000122222222100000001222211100000000111444411100001144444444441001244444744444410122444444444441001144444444442210014444474444221001444444444411000144444444441000014444474444100001444444444410000155555555551000155555555555100015555101155551001555100001555100155100000015551155510000000155115510000000015511331000000001331333100000001333011110000000111100000000000000000000000000000000000000077000000000000011110000000000013333310000000013333333100000011333333311000001551111111000000152226126100000015222212110000001222222221000000012222111000001201114444111021122144444444122101144447444441100014444444444100001444444444410000144444744441000014444444444100001444444444410000144444744441000014444444444100001555555555510000155555555551000155551115555100015551000155551015551000001555101551000000015510133100000000133113331000000013331111100000001111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","font":"00000000000000003c6e7e7e76663c001838181818183c003c66061c30607e007c06063c06067c000c1c3c6c7e0c0c007e607c0606663c003c60607c66663c007e060c18303030003c66663c66663c003c66663e06063c003c66667e666666007c66667c66667c003c66606060663c007c66666666667c007e60607c60607e007e60607c606060003c66607e66663e006666667e666666003c18181818183c001e0c0c0c0c6c3800666c7870786c66006060606060607e00667e7e7e6666660066767e6e666666003c66666666663c007c66667c606060003c6666667e6c3e007c66667c786c66003e60603c06067c007e181818181818006666666666663c0066666666663c18006666667e7e7e3c0066663c183c66660066663c18181818007e060c1830607e000000007e000000000000663c183c6600181818181800180000000000000018000018000000180000387cdededede7c383c4299a1a199423c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","rows":[0,2210304,2210845,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2210363,2210904,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2562166,0,0,2466946,0,0,2531476,0,0,0,0,0,0,0,0,0,2210468,2211009,0,0,0,0,0,0,0,0,0,2593503,0,0,2722024,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2210540,2211081,0,0,0,0,0,0,0,0,0,0,0,2593575,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2210608,2211149,0,0,0,0,0,0,0,0,0,2530155,0,2465656,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2210695,2211236,0,0,0,0,0,0,0,0,0,0,0,2625474,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"text":[24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,90,92,79,93,93,64,76,95,94,94,89,88,29,3,0,28,31,24,0,0,0,0,0,29,2,0,20,31,23,26,43,0,3,1,3,7,0,30,11,24,17,0,24,11,24,25,24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,33,25,28,22,14,0,2,37,60,38,0,0,59,24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,17,11,23,15,0,25,32,15,28,24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,13,25,31,28,29,15,0,13,22,15,11,28,39,30,18,11,24,21,0,35,25,31,0,24,11,24,25,39,24,11,24,25,0,0,0,0,0,0,0,0,0,0,0,33,25,28,22,14,0,0,0,0,0,30,19,23,15,48,49,50,51,52,53,0,0,0,42,38,54,55,0,0,0,0,0,2,37,60,0,0,0,0,0,0,56,57,58,30,19,23,15,0,31,26,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"level":"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000020304000000000000000000000000000002030400000000000000000000000000000000000000000000000000000000020304000000000000000000000000000002030400000000000000000000000000000000000000000000000000000000020304000000000000000000000000000002030400000000000000000000000000000000000000000000000000000000020304000000000000000000000000000002030400000000000000000000000000000018000000000000000000000000020304000000000000000000000000000002030400000000000000000000000000000000000000000000000000000000000000000002030400000000000000000506070000000000020304000000000000050607000000000000000000000000000000000002030400000000000000000506070000000000020304000000000000050607000000000000000000000000000000000002030400000000000000000506070000000000020304000000000000050607000000000000000000000000000000000002030400000000000000000506070000000000020304000000000000050607000000000000000000000000000019170002030400000000000000000506070000000000020304000000000000050607000000000000000000000000000000000002030400000000000000000000000000050607000000000000000000000000000000000506070000000000000000000000000000000000000000000000000000050607000000000000000000000000000000000506070000000000000000000000000000000000000000000000000000050607000000000000000000000000000000000506070000000000000000000000000000000000000000000000000000050607000000000000000000000000000000000506070000000000000000000000000000000000000000000000001700050607000000000000000000000000000000000506070000000000000000000000000000000000000000000000000000050607000000000000000000000000000000000000000000000000000000220000000000000000000000000000000000000000000000000000000000000000000000000000000000010101010100000000000000000000002121212121212121000000212121220000000000000000000000000000290000000000000000000000212121000000002122222100000000000000000000000000000000000000000000000000000000000000000000000000000101010000000000000000000000000000002400000000000000000017000000001b1b1b000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000242400000000000000000017000000001a1d1a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000242424000000000000000000170000001b1b1b1b1b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000024242424000000000000000000170000001a1a1a1a1a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002200000021292122210000000000000000000000000000000000000000002526000000000000000000252600000021222100000000000000000000000021292100000000000000000000000000002100000000002121000000002200002200002200000000002100000000000000000000212100000000000024000024000000000000000000002424000024000000000000000000000000212122210000000000000000000000002424242424000000000000000000170000001a1a1a1a1a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008090a0b000000000000000000000000000000000000000000000000000000000000000000002526000000000000272808090a0b000000000027280000000000000000000000000000000000000000000000000000000000000000000000000008090a0b000000000000000000000000000000000000000000000000000000000000000000000000242400002424000008090a0b000024242400002424000000000000000000000000000000000000000000000000000024242424242400000008090a0b0000170000001a1a1a1a1a00000000000000000000000000000000000000000000000000000000000000000008090a0b0000000000000000000000000c0d0e0f0000000000000000000000000c0d0e0f000000000000000025260000000000000000272800000000000027280c0d0e0f0000000000272800000000000c0d0e0f000000000000000000000000000000000000000000000000000000000c0d0e0f0000000000000000000000000c0d0e0f000000000000000000000000000000000000002424240000242424000c0d0e0f0024242424000024242400000c0d0e0f002526000000000000000000000000252600242424242424240000000c0d0e0f0000170000001a1a1c1a1a000c0d0e0f000000000000000000000000000000000000000000000000000000000c0d0e0f000000000000000000000000101112130000000000000014151600001011121300000014151600002728000000000000000027280014151600002728101112130000000000272814151600001011121300000014151600000000000000000000000000000014151600000000101112130000000000000014151600001011121300000014151600000000000000000000000024242424151624242424101112132424242424000024242424001011121300272814151600000000000000000027282424242424242424000000101112130000240000001a1a1c1a1a00101112130000001415160000000000000000000000000000001415160000000010111213000000000000001415160000202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020000020202020202020202020202020202000000020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020000020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020200000202020202020202020202020202020000000202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020200000202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","spawns":[[22,12],[40,12],[51,12],[53,12],[80,4],[82,4],[97,12],[99,12],[107,12],[114,12],[116,12],[124,12],[126,12],[128,12],[130,12],[174,12],[176,12]],"flagX":3172,"T":{"SKY":0,"COIN":1,"CLOUD_TL":2,"CLOUD_TM":3,"CLOUD_TR":4,"CLOUD_BL":5,"CLOUD_BM":6,"CLOUD_BR":7,"HILL_0":8,"HILL_1":9,"HILL_2":10,"HILL_3":11,"HILL_4":12,"HILL_5":13,"HILL_6":14,"HILL_7":15,"HILL_8":16,"HILL_9":17,"HILL_10":18,"HILL_11":19,"BUSH_L":20,"BUSH_M":21,"BUSH_R":22,"POLE":23,"POLE_TOP":24,"FLAG":25,"CASTLE_BRICK":26,"CASTLE_TOP":27,"CASTLE_DOOR":28,"CASTLE_WINDOW":29,"GROUND":32,"BRICK":33,"QBLOCK":34,"USED":35,"HARD":36,"PIPE_TL":37,"PIPE_TR":38,"PIPE_L":39,"PIPE_R":40,"QBLOCK_M":41},"F":{"STAND":0,"RUN1":1,"RUN2":2,"RUN3":3,"JUMP":4,"DEAD":5,"SLIME1":6,"SLIME2":7,"SLIME_FLAT":8,"COIN0":9,"COIN1":10,"COIN2":11,"COIN3":12,"DEBRIS":13,"MUSHROOM":14},"C":{"SCORE5":48,"SCORE4":49,"SCORE3":50,"SCORE2":51,"SCORE1":52,"SCORE0":53,"COIN1":54,"COIN0":55,"TIME2":56,"TIME1":57,"TIME0":58,"LIVES":59,"WORLD":60,"DIGIT0":1},"P":{"TILE":0,"SPRITE":16,"LOGO":32,"TEXT":36,"BLACK":37},"PG":{"PLAY":0,"TITLE":1,"CARD":2,"GAMEOVER":3,"CLEAR":4,"TIMEUP":5},"artKey":".ksobnwypPqgGhez"}</script>
+<script>
+(() => {
+'use strict';
+
+// ==================================================================== data
+const $ = (s, r = document) => r.querySelector(s);
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const D = JSON.parse(document.getElementById('game-data').textContent);
+const unhex = (s, w) => {
+  const n = s.length / w, a = new Uint8Array(n);
+  for (let i = 0; i < n; i++) a[i] = parseInt(s.substr(i * w, w), 16);
+  return a;
+};
+const TILES = unhex(D.tiles, 1), SPR = unhex(D.sprites, 1), FONT = unhex(D.font, 2), LEVEL0 = unhex(D.level, 2);
+const SLOTS = D.slots, ROWS = D.rows, TEXT = D.text, T = D.T, F = D.F, C = D.C;
+const TNAME = []; for (const k in T) TNAME[T[k]] = k;
+const FNAME = []; for (const k in F) FNAME[F[k]] = k;
+const PALV = D.palette.map(h => parseInt(h, 16));
+const PAL32 = new Uint32Array(64);
+PALV.forEach((v, i) => { PAL32[i] = (0xFF000000 | ((v & 255) << 16) | (v & 0xFF00) | ((v >> 16) & 255)) >>> 0; });
+const pcss = i => '#' + D.palette[i];
+const hex2 = (v, n) => v.toString(16).toUpperCase().padStart(n, '0');
+const fmt = n => Math.round(n).toLocaleString('en-US');
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const tileName = id => TNAME[id] || ('id ' + id);
+const frameName = f => {
+  if (FNAME[f]) return FNAME[f];
+  if (f >= 16 && f < 26) return 'BIG_' + ['STAND', 'RUN1', 'RUN2', 'RUN3', 'JUMP'][(f - 16) >> 1] + ((f & 1) ? ' (bottom)' : ' (top)');
+  return 'unused';
+};
+
+// Placeholder characters in the HUD strings become live digits (clock 2 of the renderer).
+const DYN = {};
+[['SCORE', 'score', 6], ['COIN', 'coins', 2], ['TIME', 'time', 3]].forEach(([n, f, k]) => {
+  for (let i = 0; i < k; i++) DYN[C[n + i]] = [f, i];
+});
+DYN[C.LIVES] = ['lives', -1];
+DYN[C.WORLD] = ['world', -1];
+function glyphFor(code, hud) {
+  const d = DYN[code];
+  if (!d) return code;
+  const v = hud[d[0]];
+  return C.DIGIT0 + (d[1] < 0 ? v & 15 : Math.floor(v / 10 ** d[1]) % 10);
+}
+
+// ==================================================================== renderer (a port of plat_render)
+function scene(level) {
+  return { level, cam: 0, frames: 0, page: D.PG.PLAY, black: false, noClip: false, hero: null, others: [],
+           hud: { score: 0, coins: 0, time: 300, lives: 3, world: 1 } };
+}
+
+// Colour number (palette index) of game pixel (lx, ly). With tr, records every lookup.
+function pixel(st, lx, ly, tr) {
+  // clock 0: addresses
+  const wx = (lx + st.cam) & 0xFFF;
+  const addr = ((ly >> 4) << 8) | (wx >> 4);
+  // clock 1 and 2: map, slot, tile pixel
+  const tid = st.level[addr];
+  const anim = (st.frames >> 3) & 3;
+  const slot = SLOTS[tid * 4 + anim];
+  const tx = wx & 15, ty = ly & 15;
+  const tpix = TILES[slot * 256 + ty * 16 + tx];
+  // sprite A: the hero
+  let heroIn = false, heroPix = 0, heroFr = 0, hdx = 0, hdy = 0;
+  const h = st.hero;
+  if (h && h.vis) {
+    hdx = (wx - h.x) & 0xFFF;
+    hdy = (ly - h.y) & 0x3FF;
+    if (h.big) { heroIn = hdx < 16 && hdy < 32; heroFr = 16 + ((h.f & 7) << 1) + ((hdy >> 4) & 1); }
+    else { heroIn = hdx < 16 && hdy < 16; heroFr = h.f; }
+    if (heroIn) heroPix = SPR[heroFr * 256 + (hdy & 15) * 16 + hdx];
+  }
+  // sprite B: the first other sprite that covers this pixel
+  let oth = null, othPix = 0, odx = 0, ody = 0;
+  const os = st.others;
+  for (let i = 0; i < os.length; i++) {
+    const s = os[i];
+    const dx = (wx - s.x) & 0xFFF, dy = (ly - s.y) & 0x3FF;
+    if (dx < 16 && dy < 16 && !(s.clip !== undefined && !st.noClip && ly >= s.clip)) {
+      oth = s; odx = dx; ody = dy;
+      othPix = SPR[(s.f & 15) * 256 + dy * 16 + dx];
+      break;
+    }
+  }
+  // text: at most one run of characters per 8-px row
+  let textOn = false, tinfo = null;
+  const re = ROWS[st.page * 32 + (ly >> 3)];
+  if (re & 0x200000) {
+    const col = (re >> 15) & 63, len = (re >> 9) & 63, off = re & 511, cx = lx >> 3, rel = (cx - col) & 63;
+    if (cx >= col && rel < len) {
+      const code = TEXT[(off + rel) & 511];
+      if (!((code & 64) && (st.frames & 32))) {
+        const g = glyphFor(code & 63, st.hud);
+        textOn = ((FONT[g * 8 + (ly & 7)] >> (7 - (lx & 7))) & 1) === 1;
+        if (tr) tinfo = { code: code & 63, g };
+      }
+    }
+  }
+  // clock 3: priority
+  let ci, win;
+  if (textOn) { ci = D.P.TEXT; win = 'text'; }
+  else if (heroIn && heroPix) { ci = D.P.SPRITE + heroPix; win = 'hero'; }
+  else if (oth && othPix) { ci = D.P.SPRITE + othPix; win = 'other'; }
+  else if (st.black) { ci = D.P.BLACK; win = 'black'; }
+  else { ci = D.P.TILE + tpix; win = 'tile'; }
+  if (tr) Object.assign(tr, { lx, ly, wx, addr, tid, anim, slot, tx, ty, tpix, heroIn, heroPix, heroFr, hdx, hdy,
+                              oth, othPix, odx, ody, textOn, tinfo, ci, win });
+  return ci;
+}
+
+class Screen {
+  constructor(canvas, scale = 3, w = 320, h = 240) {
+    this.c = canvas; this.s = scale; this.w = w; this.h = h;
+    canvas.width = w * scale; canvas.height = h * scale;
+    this.ctx = canvas.getContext('2d');
+    this.off = document.createElement('canvas');
+    this.off.width = w; this.off.height = h;
+    this.octx = this.off.getContext('2d');
+    this.img = this.octx.createImageData(w, h);
+    this.buf = new Uint32Array(this.img.data.buffer);
+  }
+  draw(st, x0 = 0, y0 = 0) {
+    const { w, h, buf } = this;
+    let i = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) buf[i++] = PAL32[pixel(st, x0 + x, y0 + y)];
+    this.octx.putImageData(this.img, 0, 0);
+    const ctx = this.ctx;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.off, 0, 0, w * this.s, h * this.s);
+    return ctx;
+  }
+}
+
+// ==================================================================== game logic (a port of plat_game)
+const ACC = 2, DEC = 4, VMAX = 36, JUMP_V = 84, GRAV = 8, GRAV_HOLD = 3, VY_MAX = 96;
+const solid = t => (t & 32) !== 0;
+const wrap8 = v => ((v + 128) & 255) - 128;
+
+class Game {
+  constructor(level) {
+    this.level = level; this.cap = true; this.followCam = false; this.cam = 0; this.frames = 0;
+    this.coins = 0; this.score = 0; this.deb = []; this.mu = null; this.pop = null; this.foes = []; this.events = [];
+    this.place(40, 192);
+  }
+  place(x, y, big = false) {
+    this.px = x * 16; this.py = y * 16; this.vx = 0; this.vy = 0; this.onGround = true; this.jumpPrev = false;
+    this.big = big; this.growT = 0; this.invT = 0; this.runAcc = 0;
+    this.hero = { x: x - 2, y: big ? y - 4 : y, f: F.STAND, vis: true, big };
+  }
+  // Map address of the tile under pixel (xp, yp); off the screen vertically is row 15 (sky).
+  addr(xp, yp) {
+    return (yp < 0 || yp > 239) ? (15 << 8) | ((xp & 0xFFF) >> 4) : (((yp >> 4) & 15) << 8) | ((xp & 0xFFF) >> 4);
+  }
+  tile(xp, yp) { return this.level[this.addr(xp, yp)]; }
+
+  step(bj, br) {
+    const ev = this.events = [];
+    this.frames = (this.frames + 1) & 255;
+    const jumpEdge = bj && !this.jumpPrev;
+    this.jumpPrev = bj;
+    const h = this.hero;
+    if (this.growT) {                               // growing: everything waits while Nano flickers
+      const g = this.growT--, pyp = this.py >> 4, b = g === 1 || (g & 4) !== 0;
+      h.big = b; h.y = b ? pyp - 4 : pyp + 12;
+      return ev;
+    }
+    // step 0: run and jump
+    const vxn = br ? Math.min(this.vx + ACC, VMAX) : (this.vx > DEC ? this.vx - DEC : 0);
+    let vyn = this.vy;
+    if (this.onGround && jumpEdge) { vyn = -JUMP_V; ev.push('jump'); }
+    vyn += (bj && vyn < 0) ? GRAV_HOLD : GRAV;
+    if (vyn > VY_MAX) vyn = VY_MAX;
+    this.vx = vxn; this.vy = vyn;
+    let nx = (this.px + vxn) & 0xFFFF, nxp = nx >> 4;
+    const pyp = this.py >> 4, hh = this.big ? 28 : 16, xr = (nxp + 11) & 0xFFF;
+    // steps 1-4: walls ahead at the head, feet and middle
+    if (this.vx !== 0 && (solid(this.tile(xr, pyp + 1)) || solid(this.tile(xr, pyp + hh - 2)) || solid(this.tile(xr, pyp + 14)))) {
+      nxp = (xr & ~15) - 12; nx = nxp << 4; this.vx = 0;
+    }
+    // steps 4-7: floor or ceiling
+    let ny = this.py + this.vy, nyp = ny >> 4;
+    const fy = this.vy < 0 ? nyp : nyp + hh;
+    const f1 = this.tile(nxp + 1, fy), f2 = this.tile(nxp + 10, fy);
+    let bump = false;
+    if (this.vy >= 0) {
+      if (solid(f1) || solid(f2)) { nyp = ((nyp + hh) & ~15) - hh; ny = nyp << 4; this.vy = 0; this.onGround = true; }
+      else this.onGround = false;
+    } else {
+      this.onGround = false;
+      if (solid(f1) || solid(f2)) { bump = true; nyp = ((nyp >> 4) + 1) << 4; ny = nyp << 4; this.vy = 8; }
+    }
+    // steps 8-9: what was bumped
+    if (bump) this.bumpAt(this.addr(nxp + 6, (ny >> 4) - 1), ev);
+    // steps 10-15: coins
+    for (const cy of [(ny >> 4) + 4, (ny >> 4) + hh - 4]) {
+      const a = this.addr(nxp + 6, cy);
+      if (this.level[a] === T.COIN) { this.level[a] = T.SKY; this.coins++; this.score += 200; ev.push('coin'); }
+    }
+    // step 16: commit
+    this.px = nx; this.py = ny; nyp = ny >> 4;
+    if (nyp > 240) ev.push('fell');
+    if (this.followCam && nxp > this.cam + 144) this.cam = Math.min(nxp - 144, 3776);
+    h.f = !this.onGround ? F.JUMP : this.vx === 0 ? F.STAND : ((this.runAcc >> 6) === 3 ? F.RUN2 : F.RUN1 + (this.runAcc >> 6));
+    this.runAcc = this.vx === 0 ? 0 : (this.runAcc + this.vx) & 255;
+    h.x = (nxp - 2) & 0xFFF; h.y = this.big ? nyp - 4 : nyp; h.big = this.big;
+    h.vis = this.invT === 0 || (this.frames & 2) !== 0;
+    if (this.invT) this.invT--;
+    this.stepPop();
+    this.stepDebris();
+    // steps 22-27: the mushroom
+    this.stepMush(ev);
+    return ev;
+  }
+
+  bumpAt(a, ev) {
+    const t = this.level[a], col = a & 255, row = a >> 8;
+    if (t === T.QBLOCK_M) {
+      this.level[a] = T.USED;
+      this.mu = { st: 1, t: 0, x: col << 8, y: row << 8, vy: 0, left: false, clip: row << 4 };
+      ev.push('sprout');
+    } else if (t === T.QBLOCK) {
+      this.level[a] = T.USED;
+      this.pop = { t: 0, x: col << 4, y0: (row << 4) - 16 };
+      this.coins++; this.score += 200; ev.push('coin');
+    } else if (t === T.BRICK) {
+      this.level[a] = T.SKY;
+      this.deb = [0, 1, 2, 3].map(i => ({
+        on: true, x: (col << 8) + (i & 1 ? 128 : 0), y: (row << 8) + (i >= 2 ? 128 : 0),
+        vx: i & 1 ? 20 : -20, vy: i >= 2 ? -40 : -72, path: [], wrapped: null,
+      }));
+      this.score += 50; ev.push('break'); this.broke = a;
+    } else if (solid(t)) ev.push('bump');
+  }
+
+  stepPop() {
+    const p = this.pop;
+    if (!p) return;
+    p.sy = p.y0 - (p.t < 12 ? p.t * 2 : 24 - (p.t - 12));
+    p.f = F.COIN0 + ((p.t >> 1) & 3);
+    if (p.t === 20) this.pop = null; else p.t++;
+  }
+
+  stepDebris() {
+    for (const d of this.deb) {
+      if (!d.on) continue;
+      const dyn = d.y + d.vy;
+      d.x = (d.x + d.vx) & 0xFFFF;
+      d.y = dyn;
+      const before = d.vy;
+      d.vy = this.cap ? (d.vy > 90 ? 96 : d.vy + 6) : wrap8(d.vy + 6);
+      if (d.vy < before) d.wrapped = [before, d.vy];
+      if ((dyn >> 4) > 240) d.on = false;
+      d.path.push([(d.x >> 4) + 8, (dyn >> 4) + 8]);
+    }
+  }
+
+  stepMush(ev) {
+    const m = this.mu;
+    if (!m) return;
+    if (m.st === 1) {                               // rising out of the block
+      m.y -= 16;
+      if (m.t === 15) { m.st = 2; m.clip = undefined; }
+      m.t++;
+      return;
+    }
+    let cfx = m.x, cfy = m.y, cfvy = Math.min(m.vy + 8, 96);
+    cfx = (m.left ? cfx - 16 : cfx + 16) & 0xFFFF;
+    cfy += cfvy;
+    let fxp = cfx >> 4, fyp = cfy >> 4;
+    const tw = this.tile(m.left ? fxp : fxp + 15, fyp + 8);
+    const fl = this.tile(fxp + 2, fyp + 16), fr = this.tile(fxp + 13, fyp + 16);
+    if (solid(tw)) { const wasLeft = m.left; m.left = !wasLeft; cfx = (wasLeft ? cfx + 16 : cfx - 16) & 0xFFFF; }
+    if (cfvy >= 0 && (solid(fl) || solid(fr))) { fyp = ((fyp + 16) & ~15) - 16; cfy = fyp << 4; cfvy = 0; }
+    m.x = cfx; m.y = cfy; m.vy = cfvy;
+    fxp = cfx >> 4; fyp = cfy >> 4;
+    const hx = this.px >> 4, hy = this.py >> 4, hh = this.big ? 28 : 16;
+    if (fyp > 240 || fxp + 32 < this.cam) this.mu = null;
+    else if (hx + 11 > fxp + 1 && hx < fxp + 15 && hy + hh - 1 > fyp + 2 && hy < fyp + 16) {
+      this.mu = null; this.score += 1000; ev.push('power');
+      if (!this.big) { this.big = true; this.py -= 192; this.growT = 48; }
+    }
+  }
+
+  state(st) {
+    st.cam = this.cam; st.frames = this.frames; st.hero = this.hero;
+    const o = st.others = [];
+    if (this.pop) o.push({ x: this.pop.x, y: this.pop.sy, f: this.pop.f });
+    if (this.mu) o.push({ x: (this.mu.x >> 4) & 0xFFF, y: this.mu.y >> 4, f: F.MUSHROOM, clip: this.mu.clip });
+    for (const f of this.foes) o.push(f);
+    for (const d of this.deb) if (d.on) o.push({ x: (d.x >> 4) & 0xFFF, y: d.y >> 4, f: F.DEBRIS });
+    st.hud.score = this.score; st.hud.coins = this.coins;
+    return st;
+  }
+}
+
+// ==================================================================== animation and sound plumbing
+const live = [];
+const io = new IntersectionObserver(es => {
+  for (const e of es) for (const w of live) if (w.el === e.target) w.vis = e.isIntersecting;
+}, { rootMargin: '150px' });
+function animate(el, tick) { const w = { el, tick, vis: false }; live.push(w); io.observe(el); return w; }
+let lastT = performance.now();
+function loop(now) {
+  const dt = Math.min(100, now - lastT);
+  lastT = now;
+  for (const w of live) if (w.vis) w.tick(dt, now);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+function fixed(hz) {
+  let acc = 0;
+  const f = (dt, fn) => {
+    const p = 1000 / f.hz;
+    acc += dt;
+    let n = 0;
+    while (acc >= p) { acc -= p; fn(); if (++n > 6) { acc = 0; break; } }
+    return n;
+  };
+  f.hz = hz;
+  return f;
+}
+function playButton(btn, on, onChange) {
+  const o = { on };
+  o.set = v => { o.on = v; btn.textContent = v ? 'Pause' : 'Play'; if (onChange) onChange(v); };
+  btn.addEventListener('click', () => o.set(!o.on));
+  o.set(on);
+  return o;
+}
+function chip(el, init, onChange, labels) {
+  const o = { v: init };
+  o.set = v => {
+    o.v = v;
+    el.setAttribute('aria-pressed', String(v));
+    if (labels) el.textContent = labels[v ? 1 : 0];
+    if (onChange) onChange(v);
+  };
+  el.addEventListener('click', () => o.set(!o.v));
+  o.set(init);
+  return o;
+}
+function pointerPos(e, el, w, h) {
+  const r = el.getBoundingClientRect();
+  return [clamp(Math.floor((e.clientX - r.left) / r.width * w), 0, w - 1),
+          clamp(Math.floor((e.clientY - r.top) / r.height * h), 0, h - 1)];
+}
+
+// Sound: the note table from plat_sfx, {half period in 25.2 MHz clocks, frames}.
+const SFX = {
+  jump: [[21000, 2], [16800, 2], [14000, 3]],
+  coin: [[12753, 4], [9553, 14]],
+  stomp: [[38182, 3], [57273, 4]],
+  bump: [[63000, 4]],
+  die: [[16071, 8], [19120, 8], [24092, 8], [32143, 20]],
+  clear: [[24092, 7], [19120, 7], [16071, 7], [12034, 24]],
+  '1up': [[9553, 5], [8036, 5], [6020, 5], [7159, 10]],
+  break: [[50400, 2], [63000, 2], [42000, 2], [63000, 3]],
+  sprout: [[31500, 3], [25200, 3], [21000, 4]],
+  power: [[24092, 5], [19120, 5], [16071, 5], [12034, 14]],
+  shrink: [[16071, 5], [21465, 5], [32143, 10]],
+};
+const noteHz = half => 25.2e6 / (2 * (half + 1));
+let actx = null, soundOn = false;
+function audio() {
+  if (!actx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    actx = new AC();
+  }
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function playSfx(name, force) {
+  if ((!soundOn && !force) || !SFX[name]) return;
+  const ac = audio();
+  if (!ac) return;
+  const osc = ac.createOscillator(), g = ac.createGain();
+  osc.type = 'square';
+  osc.connect(g).connect(ac.destination);
+  let t = ac.currentTime + 0.02;
+  g.gain.setValueAtTime(0, ac.currentTime);
+  for (const [half, len] of SFX[name]) {
+    osc.frequency.setValueAtTime(noteHz(half), t);
+    g.gain.setValueAtTime(0.06, t);
+    t += len / 60;
+  }
+  g.gain.setValueAtTime(0, t);
+  osc.start(ac.currentTime);
+  osc.stop(t + 0.03);
+}
+const soundBtn = $('#sound-toggle');
+soundBtn.addEventListener('click', () => {
+  soundOn = !soundOn;
+  if (soundOn) audio();
+  soundBtn.setAttribute('aria-pressed', String(soundOn));
+  soundBtn.textContent = soundOn ? '♪ sound on' : '♪ sound off';
+});
+const playEvents = ev => { for (const e of ev) if (e !== 'fell') playSfx(e); };
+
+// Verilog snippets: light syntax colouring.
+for (const pre of document.querySelectorAll('pre.v')) {
+  pre.innerHTML = pre.textContent.split('\n').map(line => {
+    const i = line.indexOf('//');
+    const code = i >= 0 ? line.slice(0, i) : line, com = i >= 0 ? line.slice(i) : '';
+    return esc(code)
+      .replace(/\b(\d+'s?[bdh][0-9a-fA-F_]+|\d+)\b/g, '<span class="n">$1</span>')
+      .replace(/\b(begin|end|if|else|case|endcase|always|reg|wire|assign|localparam)\b/g, '<span class="k">$1</span>')
+      + (com ? '<span class="c">' + esc(com) + '</span>' : '');
+  }).join('\n');
+}
+
+// ==================================================================== banner: the level scrolling by
+(function banner() {
+  const c = $('#banner'), ctx = c.getContext('2d');
+  const strips = [];                                // the level's bottom 6 rows, one per animation step
+  const st = scene(LEVEL0);
+  st.page = 7;                                      // a page with no text
+  for (let a = 0; a < 4; a++) {
+    const s = document.createElement('canvas');
+    s.width = 4096; s.height = 96;
+    const sx = s.getContext('2d'), img = sx.createImageData(4096, 96), buf = new Uint32Array(img.data.buffer);
+    st.frames = a << 3;
+    let i = 0;
+    for (let y = 0; y < 96; y++) for (let x = 0; x < 4096; x++) buf[i++] = PAL32[pixel(st, x, 144 + y)];
+    sx.putImageData(img, 0, 0);
+    strips.push(s);
+  }
+  let cam = 0, frames = 0;
+  const size = () => { c.width = Math.ceil(c.clientWidth / 1.5); c.height = 96; };
+  size();
+  addEventListener('resize', size);
+  const draw = () => {
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(strips[(frames >> 3) & 3], Math.floor(cam), 0, c.width, 96, 0, 0, c.width, 96);
+  };
+  draw();
+  const step = fixed(60);
+  animate(c, dt => {
+    if (REDUCED) return;
+    step(dt, () => { frames++; cam += 0.5; if (cam > 3300 - c.width) cam = 0; });
+    draw();
+  });
+})();
+
+// ==================================================================== 1-2 racing the beam
+(function beam() {
+  const c = $('#beam-c'), ctx = c.getContext('2d');
+  const cur = document.createElement('canvas'), prev = document.createElement('canvas');
+  prev.width = 640; prev.height = 480;
+  const pctx = prev.getContext('2d');
+  const scr = new Screen(cur, 2);
+  const lvl = LEVEL0.slice(), g = new Game(lvl), st = scene(lvl);
+  let slimeX = 300 * 16, slimeDir = -1, gf = 0;
+  const gameTick = () => {
+    gf++;
+    const k = gf % 150;
+    g.step(k > 0 && k < 18, false);
+    slimeX += slimeDir * 8;
+    if (slimeX < 120 * 16) slimeDir = 1;
+    if (slimeX > 380 * 16) slimeDir = -1;
+    g.foes = [{ x: slimeX >> 4, y: 192, f: (g.frames & 8) ? F.SLIME1 : F.SLIME2 }];
+  };
+  const renderNext = () => { g.state(st); st.hud.time = 300 - Math.floor(gf / 24); scr.draw(st); };
+  gameTick(); renderNext(); pctx.drawImage(cur, 0, 0);
+
+  let pos = REDUCED ? 800 * 300 + 400 : 0, flash = 0, frameNo = 0;
+  const TICK = 480 * 800, TOTAL = 525 * 800;
+  const speed = $('#beam-speed'), speedO = $('#beam-speed-o');
+  let lps = 0;
+  const setSpeed = () => {
+    const v = +speed.value;
+    lps = 15 * Math.pow(31500 / 15, v / 100);
+    speedO.textContent = v >= 100 ? 'real speed' : `${fmt(lps)} lines/s`;
+  };
+  speed.addEventListener('input', setSpeed);
+  setSpeed();
+  const play = playButton($('#beam-play'), !REDUCED);
+  const r = $('#beam-r');
+  let lastRead = '';
+
+  function draw() {
+    ctx.fillStyle = '#0c0c12';
+    ctx.fillRect(0, 0, 800, 525);
+    ctx.drawImage(prev, 0, 0);
+    ctx.fillStyle = 'rgba(8, 8, 14, .6)';
+    ctx.fillRect(0, 0, 640, 480);
+    const y = Math.floor(pos / 800), x = Math.floor(pos % 800);
+    const by = Math.min(y, 480);
+    if (by > 0) ctx.drawImage(cur, 0, 0, 640, by, 0, 0, 640, by);
+    if (y < 480 && x > 0) { const w = Math.min(x, 640); ctx.drawImage(cur, 0, y, w, 1, 0, y, w, 1); }
+    // blanking, with the sync pulses a shade lighter
+    ctx.fillStyle = '#1b1924';
+    ctx.fillRect(640, 0, 160, 525);
+    ctx.fillRect(0, 480, 640, 45);
+    ctx.fillStyle = '#2a2233';
+    ctx.fillRect(656, 0, 96, 525);
+    ctx.fillRect(0, 490, 800, 2);
+    ctx.fillStyle = '#8d8799';
+    ctx.font = '600 17px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.save(); ctx.translate(705, 240); ctx.rotate(-Math.PI / 2);
+    ctx.fillText('HORIZONTAL BLANKING · 160 CLOCKS', 0, 6);
+    ctx.restore();
+    if (flash > 0) {
+      ctx.globalAlpha = flash;
+      ctx.fillStyle = '#c84c0c';
+      ctx.fillRect(0, 480, 800, 45);
+      ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = flash > 0.3 ? '#fff' : '#8d8799';
+    ctx.fillText(flash > 0.3 ? 'FRAME TICK: THE GAME RUNS ITS 41 STEPS' : 'VERTICAL BLANKING · 45 LINES', 320, 510);
+    // the beam
+    ctx.fillStyle = 'rgba(255, 255, 255, .10)';
+    ctx.fillRect(0, y, 800, 1);
+    ctx.fillRect(x, 0, 1, 525);
+    ctx.save();
+    ctx.shadowColor = '#ffcf6b'; ctx.shadowBlur = 18;
+    ctx.fillStyle = '#fff6d8';
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    const phase = y >= 480 ? '<span class="tag vb">vertical blanking</span> nothing to draw; the game has updated the world'
+      : x >= 640 ? '<span class="tag hb">horizontal blanking</span> end of line ' + y
+      : `<span class="tag vis">visible</span> the renderer is producing pixel (${x}, ${y}), game pixel (${x >> 1}, ${y >> 1})`;
+    const txt = `x = <b>${String(x).padStart(3, ' ')}</b>  y = <b>${String(y).padStart(3, ' ')}</b> · clock <b>${fmt(pos)}</b> of 420,000 · frame ${frameNo}<br>${phase}`;
+    if (txt !== lastRead) { r.innerHTML = txt; lastRead = txt; }
+  }
+  draw();
+
+  animate(c, dt => {
+    if (play.on) {
+      let adv = dt / 1000 * lps * 800, wrapped = false;
+      while (adv > 0) {
+        const toTick = pos < TICK ? TICK - pos : Infinity, toWrap = TOTAL - pos;
+        const s = Math.min(adv, toTick, toWrap);
+        pos += s; adv -= s;
+        if (s === toTick) { gameTick(); flash = 1; }
+        if (pos >= TOTAL) { pos = 0; frameNo++; if (!wrapped) pctx.drawImage(cur, 0, 0); wrapped = true; renderNext(); }
+      }
+    }
+    flash = Math.max(0, flash - dt / 1200);
+    draw();
+  });
+})();
+
+// ==================================================================== 1-3 TMDS
+(function tmds() {
+  const sw = $('#tmds-sw'), out = $('#tmds-out');
+  let colour = 0, ch = 1;
+  const pop = v => { let n = 0; for (; v; v >>= 1) n += v & 1; return n; };
+  const transitions = (v, n) => { let t = 0; for (let i = 1; i < n; i++) t += ((v >> i) & 1) !== ((v >> (i - 1)) & 1); return t; };
+  function encode(d, cnt) {
+    const ones = pop(d), useXnor = ones > 4 || (ones === 4 && !(d & 1));
+    let qm = d & 1;
+    for (let i = 1; i < 8; i++) {
+      const b = ((qm >> (i - 1)) & 1) ^ ((d >> i) & 1);
+      qm |= (useXnor ? 1 - b : b) << i;
+    }
+    if (!useXnor) qm |= 256;
+    const q8 = (qm >> 8) & 1, disp = 2 * pop(qm & 255) - 8;
+    let q, next, inv;
+    if (cnt === 0 || disp === 0) {
+      inv = !q8; q = ((q8 ^ 1) << 9) | (q8 << 8) | (q8 ? qm & 255 : ~qm & 255); next = q8 ? cnt + disp : cnt - disp;
+    } else if ((cnt > 0 && disp > 0) || (cnt < 0 && disp < 0)) {
+      inv = true; q = 512 | (q8 << 8) | (~qm & 255); next = cnt - disp + (q8 ? 2 : 0);
+    } else {
+      inv = false; q = (q8 << 8) | (qm & 255); next = cnt + disp - (q8 ? 0 : 2);
+    }
+    return { ones, useXnor, qm, disp, q, next, inv };
+  }
+  const bits = (v, n, ctl = 0) => {
+    let s = '<span class="bits">';
+    for (let i = 0; i < n; i++) s += `<span class="${(v >> i) & 1 ? 'one' : ''}${i >= ctl && ctl ? ' ctl' : ''}">${(v >> i) & 1}</span>`;
+    return s + '</span>';
+  };
+  const signed = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v);
+  function wave(q) {
+    const W = 36, H = 34, pts = [];
+    for (let i = 0; i < 10; i++) { const y = (q >> i) & 1 ? 4 : H; pts.push(`${i * W},${y} ${(i + 1) * W},${y}`); }
+    let labels = '';
+    for (let i = 0; i < 10; i++) labels += `<text x="${i * W + W / 2}" y="${H + 16}" text-anchor="middle" class="lbl">${i}</text>`;
+    return `<svg class="diagram" viewBox="-2 0 ${10 * W + 4} ${H + 22}" style="max-width:420px" role="img" aria-label="Waveform of the 10-bit word">
+      <polyline points="${pts.join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>${labels}</svg>`;
+  }
+  function render() {
+    const v = PALV[colour], d = (v >> (8 * ch)) & 255, name = ['blue', 'green', 'red'][ch];
+    const e = encode(d, 0);
+    let cnt = 0, rows = '';
+    for (let p = 0; p < 5; p++) {
+      const r = encode(d, cnt);
+      rows += `<tr><td>${p + 1}</td><td>${signed(cnt)}</td><td>${signed(r.disp)}</td><td>${r.inv ? 'yes' : 'no'}</td><td>${bits(r.q, 10, 8)}</td><td>${signed(r.next)}</td></tr>`;
+      cnt = r.next;
+    }
+    out.innerHTML = `
+      <div class="tmds-row"><div>colour</div><div><span class="sw" style="display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;background:${pcss(colour)}"></span>
+        <code>#${D.palette[colour].toUpperCase()}</code> → ${name} = <code>0x${hex2(d, 2)}</code> = ${d}</div></div>
+      <div class="tmds-row"><div>input byte</div><div>${bits(d, 8)} &nbsp;${e.ones} ones, ${transitions(d, 8)} transitions</div></div>
+      <div class="tmds-row"><div>step 1: ${e.useXnor ? 'XNOR' : 'XOR'}</div><div>${bits(e.qm, 9, 8)} &nbsp;${transitions(e.qm, 8)} transitions; bit 8 = ${(e.qm >> 8) & 1} records ${e.useXnor ? 'XNOR' : 'XOR'}</div></div>
+      <div class="tmds-row"><div>step 2: balance</div><div>the same colour sent 5 pixels in a row:</div></div>
+      <div class="tablewrap"><table class="tmds-seq"><thead><tr><th>pixel</th><th>balance before</th><th>word's 1s − 0s</th><th>invert?</th><th>sent, bit 0 first</th><th>balance after</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="tmds-row"><div>on the wire</div><div>${wave(e.q)}<div class="budget-note">pixel 1's 10 bits, 3.97 ns each at 252 Mbit/s</div></div></div>`;
+  }
+  D.palette.slice(0, 38).forEach((h, i) => {
+    const b = document.createElement('button');
+    b.style.background = '#' + h;
+    b.title = `colour ${i}: #${h.toUpperCase()}`;
+    b.setAttribute('aria-label', b.title);
+    b.setAttribute('aria-pressed', String(i === colour));
+    b.addEventListener('click', () => {
+      colour = i;
+      for (const x of sw.children) x.setAttribute('aria-pressed', 'false');
+      b.setAttribute('aria-pressed', 'true');
+      render();
+    });
+    sw.appendChild(b);
+  });
+  for (const b of document.querySelectorAll('#tmds-fig [data-ch]')) {
+    b.addEventListener('click', () => {
+      ch = +b.dataset.ch;
+      for (const x of document.querySelectorAll('#tmds-fig [data-ch]')) x.setAttribute('aria-pressed', String(x === b));
+      render();
+    });
+  }
+  render();
+})();
+
+// ==================================================================== 1-4 art
+const SPRITE_COLOURS = ['transparent', 'outline', 'skin', 'orange', 'blue', 'brown', 'white', 'yellow', 'slime',
+  'slime dark', 'slime light', 'coin', 'coin dark', 'coin shine', 'brick', 'brick dark'];
+(function art() {
+  const tabs = $('#art-tabs'), letters = $('#art-letters'), c = $('#art-c'), ctx = c.getContext('2d'), legend = $('#art-legend');
+  const SETS = [['Nano', [F.STAND]], ['Nano running', [F.RUN2]], ['Big Nano', [16, 17]], ['Slime', [F.SLIME1]],
+                ['Mushroom', [F.MUSHROOM]], ['Coin', [F.COIN0]]];
+  const Z = 12;
+  let cur = [], hover = -1;
+  const idx = (x, y) => SPR[cur[y >> 4] * 256 + (y & 15) * 16 + x];
+  function drawSprite() {
+    const H = cur.length * 16, a = cssVar('--code-bg'), b = cssVar('--line');
+    ctx.clearRect(0, 0, c.width, c.height);
+    for (let y = 0; y < H; y++) for (let x = 0; x < 16; x++) {
+      const v = idx(x, y);
+      ctx.fillStyle = v ? pcss(16 + v) : ((x + y) & 1 ? a : b);
+      ctx.fillRect(x * Z, y * Z, Z, Z);
+    }
+    if (hover >= 0) {
+      ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 3;
+      ctx.strokeRect((hover % 16) * Z + 1.5, Math.floor(hover / 16) * Z + 1.5, Z - 3, Z - 3);
+    }
+  }
+  function setHover(i) {
+    if (i === hover) return;
+    const old = letters.children[hover];
+    if (old) old.classList.remove('on');
+    hover = i;
+    const n = letters.children[hover];
+    if (n) n.classList.add('on');
+    drawSprite();
+  }
+  function show(frames) {
+    cur = frames;
+    const H = frames.length * 16;
+    c.width = 16 * Z; c.height = H * Z;
+    c.style.width = (16 * Z) + 'px';
+    letters.style.gridTemplateColumns = 'repeat(16, 1.25em)';
+    letters.innerHTML = '';
+    const used = new Set();
+    for (let y = 0; y < H; y++) for (let x = 0; x < 16; x++) {
+      const v = idx(x, y), s = document.createElement('span');
+      s.textContent = D.artKey[v];
+      if (v) {
+        used.add(v);
+        const p = PALV[16 + v];
+        s.style.background = `rgba(${p >> 16}, ${(p >> 8) & 255}, ${p & 255}, .38)`;
+      } else s.style.color = 'var(--faint)';
+      s.dataset.i = y * 16 + x;
+      letters.appendChild(s);
+    }
+    legend.innerHTML = [...used].sort((a, b) => a - b).map(v =>
+      `<span><i style="background:${pcss(16 + v)}"></i><code>${D.artKey[v]}</code> = ${v} ${SPRITE_COLOURS[v]}</span>`).join('')
+      + '<span><code>.</code> = 0 transparent</span>';
+    hover = -1;
+    drawSprite();
+  }
+  SETS.forEach(([name, frames], i) => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = name;
+    b.setAttribute('aria-pressed', String(i === 0));
+    b.addEventListener('click', () => {
+      for (const x of tabs.children) x.setAttribute('aria-pressed', 'false');
+      b.setAttribute('aria-pressed', 'true');
+      show(frames);
+    });
+    tabs.appendChild(b);
+  });
+  letters.addEventListener('pointerover', e => { if (e.target.dataset.i) setHover(+e.target.dataset.i); });
+  letters.addEventListener('pointerleave', () => setHover(-1));
+  c.addEventListener('pointermove', e => {
+    const r = c.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) / r.width * 16), y = Math.floor((e.clientY - r.top) / r.height * cur.length * 16);
+    setHover(clamp(y, 0, cur.length * 16 - 1) * 16 + clamp(x, 0, 15));
+  });
+  c.addEventListener('pointerleave', () => setHover(-1));
+  show(SETS[0][1]);
+})();
+
+// Slot names: which tile id and animation step each of the 64 tile slots holds.
+const SLOT_NAMES = [];
+for (let id = 0; id < 64; id++) {
+  const animated = SLOTS[id * 4 + 1] !== SLOTS[id * 4];
+  for (let a = 0; a < 4; a++) {
+    const s = SLOTS[id * 4 + a];
+    if (SLOT_NAMES[s] === undefined && (TNAME[id] || id === 0)) SLOT_NAMES[s] = tileName(id) + (animated ? ` (step ${a})` : '');
+  }
+}
+(function sheets() {
+  function sheet(canvas, label, n, perRow, getPix, name, transparent) {
+    const S = 16, G = 2, rows = Math.ceil(n / perRow);
+    canvas.width = perRow * (S + G) + G; canvas.height = rows * (S + G) + G;
+    const ctx = canvas.getContext('2d'), img = ctx.createImageData(canvas.width, canvas.height), buf = new Uint32Array(img.data.buffer);
+    for (let k = 0; k < n; k++) {
+      const ox = G + (k % perRow) * (S + G), oy = G + Math.floor(k / perRow) * (S + G);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const v = getPix(k, x, y);
+        if (transparent && v === 16) continue;
+        buf[(oy + y) * canvas.width + ox + x] = PAL32[v];
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    canvas.addEventListener('pointermove', e => {
+      const [x, y] = pointerPos(e, canvas, canvas.width, canvas.height);
+      const k = Math.floor((y - 1) / (S + G)) * perRow + Math.floor((x - 1) / (S + G));
+      label.textContent = k >= 0 && k < n ? name(k) : '';
+    });
+  }
+  sheet($('#sheet-t'), $('#sheet-t-l'), 64, 16, (k, x, y) => TILES[k * 256 + y * 16 + x],
+        k => `slot ${k}: ${SLOT_NAMES[k] || 'unused'}`, false);
+  sheet($('#sheet-s'), $('#sheet-s-l'), 32, 16, (k, x, y) => 16 + SPR[k * 256 + y * 16 + x],
+        k => `frame ${k}: ${frameName(k)}`, true);
+})();
+(function animStrip() {
+  const el = $('#anim-strip');
+  const cans = [];
+  for (const id of [T.COIN, T.QBLOCK]) {
+    const div = document.createElement('div');
+    const cs = [];
+    for (let a = 0; a < 4; a++) {
+      const cv = document.createElement('canvas');
+      cv.width = 16; cv.height = 16;
+      const ctx = cv.getContext('2d'), img = ctx.createImageData(16, 16), buf = new Uint32Array(img.data.buffer), s = SLOTS[id * 4 + a];
+      for (let i = 0; i < 256; i++) buf[i] = PAL32[TILES[s * 256 + i]];
+      ctx.putImageData(img, 0, 0);
+      div.appendChild(cv);
+      cs.push(cv);
+    }
+    const cap = document.createElement('div');
+    cap.innerHTML = `tile id ${id} (${tileName(id)}) → slots ${[0, 1, 2, 3].map(a => SLOTS[id * 4 + a]).join(', ')}`;
+    div.appendChild(cap);
+    el.appendChild(div);
+    cans.push(cs);
+  }
+  let frames = 0, shown = -1;
+  const step = fixed(60);
+  const show = () => {
+    const a = (frames >> 3) & 3;
+    if (a === shown) return;
+    shown = a;
+    for (const cs of cans) cs.forEach((cv, i) => cv.classList.toggle('on', i === a));
+  };
+  show();
+  animate(el, dt => { if (!REDUCED) step(dt, () => frames++); show(); });
+})();
+
+// ==================================================================== 2-1 level explorer
+const spawnSprites = (cam, frames) => D.spawns
+  .filter(([c]) => c * 16 > cam - 16 && c * 16 < cam + 320)
+  .map(([c, r]) => ({ x: c * 16, y: r * 16, f: (frames & 8) ? F.SLIME1 : F.SLIME2 }));
+(function explorer() {
+  const mini = $('#lvl-mini'), view = $('#lvl-c'), r = $('#lvl-r');
+  const scr = new Screen(view, 3);
+  const st = scene(LEVEL0);
+  st.hero = { x: 38, y: 192, f: F.STAND, vis: true, big: false };
+  let cam = 0, hoverT = null;
+  // the whole level, drawn once for the minimap
+  const full = document.createElement('canvas');
+  full.width = 4096; full.height = 240;
+  {
+    const fs = scene(LEVEL0), fx = full.getContext('2d'), img = fx.createImageData(4096, 240), buf = new Uint32Array(img.data.buffer);
+    fs.page = 7;
+    let i = 0;
+    for (let y = 0; y < 240; y++) for (let x = 0; x < 4096; x++) buf[i++] = PAL32[pixel(fs, x, y)];
+    fx.putImageData(img, 0, 0);
+  }
+  mini.width = 1024; mini.height = 60;
+  const mctx = mini.getContext('2d');
+  const grid = chip($('#lvl-grid'), false), sol = chip($('#lvl-solid'), false), ids = chip($('#lvl-ids'), false);
+  const auto = playButton($('#lvl-auto'), false, v => { $('#lvl-auto').textContent = v ? 'Stop' : 'Auto-scroll'; });
+
+  function drawMini() {
+    mctx.imageSmoothingEnabled = true;
+    mctx.drawImage(full, 0, 0, 1024, 60);
+    mctx.fillStyle = 'rgba(0, 0, 0, .38)';
+    mctx.fillRect(0, 0, cam / 4, 60);
+    mctx.fillRect((cam + 320) / 4, 0, 1024, 60);
+    mctx.fillStyle = '#a840e8';
+    for (const [c, rw] of D.spawns) { mctx.beginPath(); mctx.arc(c * 4 + 2, rw * 4 + 2, 2.6, 0, Math.PI * 2); mctx.fill(); }
+    mctx.strokeStyle = '#fff'; mctx.lineWidth = 2;
+    mctx.strokeRect(cam / 4 + 1, 1, 80 - 2, 58);
+  }
+  function draw() {
+    st.cam = cam;
+    st.others = spawnSprites(cam, st.frames);
+    const ctx = scr.draw(st), S = 3;
+    const c0 = cam >> 4, off = cam & 15;
+    ctx.save();
+    if (sol.v || ids.v) {
+      ctx.font = '600 14px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (let row = 0; row < 15; row++) for (let k = 0; k <= 20; k++) {
+        const col = c0 + k;
+        if (col > 255) break;
+        const id = LEVEL0[row * 256 + col], x = (k * 16 - off) * S, y = row * 16 * S;
+        if (sol.v && solid(id)) {
+          ctx.fillStyle = 'rgba(255, 40, 40, .35)'; ctx.fillRect(x, y, 48, 48);
+          ctx.strokeStyle = 'rgba(255, 60, 60, .95)'; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, 46, 46);
+        }
+        if (ids.v && id) {
+          ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(id, x + 24, y + 25);
+          ctx.fillStyle = solid(id) ? '#ffd0d0' : '#fff'; ctx.fillText(id, x + 24, y + 25);
+        }
+      }
+    }
+    if (grid.v) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, .35)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = (16 - off) & 15; x <= 320; x += 16) { ctx.moveTo(x * S + .5, 0); ctx.lineTo(x * S + .5, 720); }
+      for (let y = 0; y <= 240; y += 16) { ctx.moveTo(0, y * S + .5); ctx.lineTo(960, y * S + .5); }
+      ctx.stroke();
+    }
+    if (hoverT) {
+      const x = (hoverT[1] * 16 - cam) * S, y = hoverT[0] * 16 * S;
+      ctx.strokeStyle = '#ffe14d'; ctx.lineWidth = 3; ctx.strokeRect(x + 1.5, y + 1.5, 45, 45);
+    }
+    ctx.restore();
+    drawMini();
+    let t = `camera x = <b>${Math.round(cam)}</b> px · columns <b>${cam >> 4}</b>–<b>${Math.min(255, (cam + 319) >> 4)}</b> of 256`;
+    if (hoverT) {
+      const id = LEVEL0[hoverT[0] * 256 + hoverT[1]];
+      t += `<br>tile at row <b>${hoverT[0]}</b>, column <b>${hoverT[1]}</b>: id <b>${id}</b> = ${tileName(id)}, binary <b>${id.toString(2).padStart(6, '0')}</b> → bit 5 = ${solid(id) ? '1: <b>solid</b>' : '0: background'}`;
+    } else t += '<br>Hover the view to read a tile; drag it or the minimap to scroll.';
+    r.innerHTML = t;
+  }
+  const setCam = v => { cam = Math.round(clamp(v, 0, 3776)); };
+  // minimap drag
+  const miniMove = e => { const rc = mini.getBoundingClientRect(); setCam((e.clientX - rc.left) / rc.width * 4096 - 160); draw(); };
+  mini.addEventListener('pointerdown', e => { mini.setPointerCapture(e.pointerId); auto.set(false); miniMove(e); });
+  mini.addEventListener('pointermove', e => { if (mini.hasPointerCapture(e.pointerId)) miniMove(e); });
+  // view drag and hover
+  let drag = null;
+  view.addEventListener('pointerdown', e => { drag = { x: e.clientX, cam }; view.setPointerCapture(e.pointerId); auto.set(false); });
+  view.addEventListener('pointermove', e => {
+    const rc = view.getBoundingClientRect();
+    if (drag) setCam(drag.cam - (e.clientX - drag.x) * 320 / rc.width);
+    const [lx, ly] = pointerPos(e, view, 320, 240);
+    hoverT = [Math.min(14, ly >> 4), ((lx + cam) >> 4) & 255];
+    draw();
+  });
+  view.addEventListener('pointerup', () => { drag = null; });
+  view.addEventListener('pointercancel', () => { drag = null; });
+  view.addEventListener('pointerleave', () => { if (!drag) { hoverT = null; draw(); } });
+  view.tabIndex = 0;
+  view.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setCam(cam + (e.key === 'ArrowLeft' ? -16 : 16)); draw(); }
+  });
+  for (const b of ['#lvl-grid', '#lvl-solid', '#lvl-ids']) $(b).addEventListener('click', draw);
+  draw();
+  const step = fixed(60), paint = fixed(30);
+  animate(view, dt => {
+    step(dt, () => {
+      if (!REDUCED) st.frames = (st.frames + 1) & 255;
+      if (auto.on) { cam += 1.5; if (cam > 3776) cam = 0; }
+    });
+    paint(dt, draw);
+  });
+})();
+
+// ==================================================================== 2-2 pipeline
+(function pipeline() {
+  const c = $('#pipe-c'), ctx = c.getContext('2d'), info = $('#pipe-stages');
+  const LY = 196, CAM = 200;
+  const st = scene(LEVEL0);
+  st.cam = CAM; st.frames = 0;
+  st.hero = { x: 258, y: 192, f: F.STAND, vis: true, big: false };
+  st.others = spawnSprites(CAM, 0);
+  const line = [];
+  for (let x = 0; x < 640; x++) { const tr = {}; pixel(st, x >> 1, LY, tr); line.push(tr); }
+  let head = 112, prog = 1, W, H, SW, TK, PW, SY, narrow, lastInfo = '';
+  const SX = k => 16 + k * (SW + 16);
+  function layout() {
+    narrow = c.clientWidth < 600;
+    W = narrow ? 480 : 960; H = narrow ? 236 : 250;
+    c.width = W; c.height = H;
+    SW = (W - 32 - 48) / 4; TK = narrow ? 32 : 44; PW = (W - 48) / 640; SY = H - 76;
+  }
+  layout();
+  addEventListener('resize', () => { layout(); draw(); });
+  const speed = $('#pipe-speed'), so = $('#pipe-speed-o');
+  const setSpeed = () => { so.textContent = `${speed.value} clock${speed.value === '1' ? '' : 's'}/s`; };
+  speed.addEventListener('input', setSpeed); setSpeed();
+  const play = playButton($('#pipe-play'), !REDUCED);
+  $('#pipe-step').addEventListener('click', () => { play.set(false); head++; prog = 0; if (head > 643) head = 0; });
+  const STAGES = ['Clock 0 · addresses', 'Clock 1 · first reads', 'Clock 2 · second reads', 'Clock 3 · pick colour'];
+  function stageText(k, x) {
+    const t = line[x];
+    if (!t) return ['(empty)'];
+    const who = t.oth ? frameName(t.oth.f).toLowerCase().replace('_', ' ') : '';
+    switch (k) {
+      case 0: return [`pixel <b>x = ${x}</b>, y = ${LY * 2}`, `lx = ${t.lx}, ly = ${t.ly}`, `wx = ${t.lx} + ${CAM} = <b>${t.wx}</b>`,
+                      `map[row ${t.ly >> 4}][col ${t.wx >> 4}]`];
+      case 1: return [`tile id <b>${t.tid}</b> ${tileName(t.tid)}`, t.heroIn ? `Nano pixel: <b>${t.heroPix || 'clear'}</b>` : 'Nano: not here',
+                      t.oth ? `${who}: <b>${t.othPix || 'clear'}</b>` : 'other sprites: none'];
+      case 2: return [`slot <b>${t.slot}</b> (anim ${t.anim})`, `tile pixel [${t.ty}][${t.tx}] = <b>${t.tpix}</b>`];
+      default: return [`winner: <b>${t.win === 'other' ? who : t.win === 'hero' ? 'Nano' : t.win}</b>`,
+                       `palette[${t.ci}] = <span class="sw" style="background:${pcss(t.ci)}"></span> <b>#${D.palette[t.ci].toUpperCase()}</b>`];
+    }
+  }
+  const ease = p => { const q = Math.min(1, p / 0.45); return q * q * (3 - 2 * q); };
+  function draw() {
+    const ink = '#ece7dc', mute = '#8d8799', big = narrow ? 17 : 14;
+    ctx.fillStyle = '#131219'; ctx.fillRect(0, 0, W, H);
+    for (let k = 0; k < 4; k++) {
+      ctx.fillStyle = '#1d1b26'; ctx.fillRect(SX(k), 12, SW, 118);
+      ctx.strokeStyle = '#34303f'; ctx.lineWidth = 1; ctx.strokeRect(SX(k) + .5, 12.5, SW - 1, 117);
+      ctx.fillStyle = '#f07a3c'; ctx.textAlign = 'left'; ctx.font = `600 ${big}px "IBM Plex Mono", monospace`;
+      ctx.fillText('CLOCK ' + k, SX(k) + 10, 34);
+      if (k < 3) { ctx.fillStyle = '#4a4556'; ctx.fillRect(SX(k) + SW + 3, 52, 10, TK); }
+    }
+    // tokens: pixel head-k sits in stage k; they glide over the first part of each clock
+    const e = ease(prog);
+    ctx.font = `600 ${narrow ? 15 : 12}px "IBM Plex Mono", monospace`;
+    for (let k = -1; k <= 4; k++) {
+      const x = head - k;
+      if (x < 0 || x >= 640) continue;
+      const posn = k - 1 + e;
+      if (posn < -0.5 || posn > 3.6) continue;
+      const cx = SX(0) + SW / 2 + posn * (SW + 16);
+      ctx.globalAlpha = posn > 3 ? Math.max(0, 1 - (posn - 3) * 2.5) : posn < 0 ? Math.max(0, 1 + posn * 2) : 1;
+      ctx.fillStyle = k >= 1 ? pcss(line[x].ci) : '#3a3645';
+      ctx.fillRect(cx - TK / 2, 52, TK, TK);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(cx - TK / 2, 52, TK, TK);
+      ctx.fillStyle = ink; ctx.textAlign = 'center';
+      ctx.fillText('x=' + x, cx, 52 + TK + 22);
+      ctx.globalAlpha = 1;
+    }
+    // the scanline so far
+    ctx.fillStyle = mute; ctx.font = `600 ${narrow ? 15 : 12}px "IBM Plex Mono", monospace`; ctx.textAlign = 'left';
+    const done = clamp(head - 3, 0, 640);
+    ctx.fillText(`SCREEN LINE ${LY * 2}: ${done} OF 640 OUT`, 24, SY - 12);
+    ctx.fillStyle = '#23212c'; ctx.fillRect(24, SY, 640 * PW, 36);
+    for (let x = 0; x < done; x++) { ctx.fillStyle = pcss(line[x].ci); ctx.fillRect(24 + x * PW, SY, PW + 0.4, 36); }
+    ctx.fillStyle = '#fff'; ctx.fillRect(24 + done * PW - 1, SY - 4, 2, 44);
+    ctx.fillStyle = mute; ctx.font = `400 ${narrow ? 14 : 11}px "IBM Plex Mono", monospace`; ctx.textAlign = 'center';
+    for (let x = 0; x <= 640; x += 160) ctx.fillText(String(x), 24 + x * PW, SY + 56);
+    // what each stage does for the pixel it holds this clock
+    let html = '';
+    for (let k = 0; k < 4; k++) {
+      const x = head - (prog < 0.45 ? k + 1 : k);
+      html += `<div><h4>${STAGES[k]}</h4>${(x >= 0 && x < 640 ? stageText(k, x) : ['(empty)']).map(l => `<div>${l}</div>`).join('')}</div>`;
+    }
+    if (html !== lastInfo) { info.innerHTML = html; lastInfo = html; }
+  }
+  c.addEventListener('click', e => {
+    const [x, y] = pointerPos(e, c, W, H);
+    if (y > SY - 24) { head = clamp(Math.round((x - 24) / PW), 0, 640) + 3; prog = 1; draw(); }
+  });
+  draw();
+  animate(c, dt => {
+    if (play.on) {
+      prog += dt / 1000 * +speed.value;
+      while (prog >= 1) { prog -= 1; head++; if (head > 643) head = 0; }
+    } else prog = Math.min(1, prog + dt / 400);
+    draw();
+  });
+})();
+
+// ==================================================================== 2-2 inspector
+(function inspector() {
+  const view = $('#insp-c'), out = $('#insp-trace'), zoom = $('#insp-zoom'), camIn = $('#insp-cam'), camO = $('#insp-cam-o');
+  const scr = new Screen(view, 3);
+  const st = scene(LEVEL0);
+  st.hero = { x: 258, y: 192, f: F.STAND, vis: true, big: false };
+  let sel = null, last = '';
+  // start on the ? block that's in view
+  const setCam = () => { st.cam = +camIn.value; camO.textContent = camIn.value + ' px'; };
+  setCam();
+  for (let c = st.cam >> 4; c < (st.cam >> 4) + 20 && !sel; c++) for (let r = 0; r < 15; r++)
+    if (LEVEL0[r * 256 + c] === T.QBLOCK) { sel = [c * 16 + 9 - st.cam, r * 16 + 6]; break; }
+  if (!sel) sel = [160, 120];
+  camIn.addEventListener('input', () => { setCam(); draw(); });
+  const zc = [];
+  for (let i = 0; i < 2; i++) {
+    const f = document.createElement('figure'), cv = document.createElement('canvas'), cap = document.createElement('figcaption');
+    cv.width = 128; cv.height = 128;
+    f.append(cv, cap);
+    zoom.appendChild(f);
+    zc.push({ f, cv, cap, ctx: cv.getContext('2d') });
+  }
+  function zoomDraw(z, getPix, cx, cy, caption) {
+    z.f.hidden = false;
+    const ctx = z.ctx, a = cssVar('--code-bg'), b = cssVar('--line');
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+      const v = getPix(x, y);
+      ctx.fillStyle = v < 0 ? ((x + y) & 1 ? a : b) : pcss(v);
+      ctx.fillRect(x * 8, y * 8, 8, 8);
+    }
+    ctx.strokeStyle = '#ff2d55'; ctx.lineWidth = 2;
+    ctx.strokeRect(cx * 8 - 1, cy * 8 - 1, 10, 10);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.strokeRect(cx * 8 - 2.5, cy * 8 - 2.5, 13, 13);
+    z.cap.textContent = caption;
+  }
+  function trace() {
+    st.others = spawnSprites(st.cam, st.frames);
+    const [lx, ly] = sel, t = {};
+    pixel(st, lx, ly, t);
+    const sw = ci => `<span class="sw" style="background:${pcss(ci)}"></span>`;
+    const who = t.oth ? frameName(t.oth.f).toLowerCase().replace('_', ' ') : '';
+    const bin = t.tid.toString(2).padStart(6, '0');
+    let text = 'none on this row';
+    if (t.tinfo) text = `character ${t.tinfo.code} → glyph ${t.tinfo.g}, font bit = ${t.textOn ? 1 : 0}`;
+    const html = `
+      <div class="stage"><h4>Clock 0 · addresses</h4>
+        <div>screen (x, y) = (<b>${lx * 2}</b>, <b>${ly * 2}</b>) → game pixel (lx, ly) = (<b>${lx}</b>, <b>${ly}</b>)</div>
+        <div>wx = lx + cam_x = ${lx} + ${st.cam} = <b>${t.wx}</b></div>
+        <div>map address = {ly[7:4], wx[11:4]} = row <b>${ly >> 4}</b>, col <b>${t.wx >> 4}</b> = <b>0x${hex2(t.addr, 3)}</b></div>
+        <div>sprite boxes: Nano <b>${t.heroIn ? 'yes' : 'no'}</b> · other <b>${t.oth ? who : 'none'}</b></div></div>
+      <div class="stage"><h4>Clock 1 · first reads</h4>
+        <div>map → tile id <b>${t.tid}</b> ${tileName(t.tid)} (${bin}: ${solid(t.tid) ? 'solid' : 'not solid'})</div>
+        <div>sprite port A: ${t.heroIn ? `frame ${t.heroFr}, pixel [${t.hdy & 15}][${t.hdx}] = <b>${t.heroPix}</b>` : '—'}</div>
+        <div>sprite port B: ${t.oth ? `frame ${t.oth.f}, pixel [${t.ody}][${t.odx}] = <b>${t.othPix}</b>` : '—'}</div>
+        <div>text: ${text}</div></div>
+      <div class="stage"><h4>Clock 2 · second reads</h4>
+        <div>slot = slots[{${t.tid}, frames[4:3] = ${t.anim}}] = <b>${t.slot}</b></div>
+        <div>tile pixel = tiles[{${t.slot}, ty ${t.ty}, tx ${t.tx}}] = <b>${t.tpix}</b></div></div>
+      <div class="stage"><h4>Clock 3 · priority + palette</h4>
+        <div>text ${t.win === 'text' ? '✓' : '✗'} · Nano ${t.win === 'hero' ? '✓' : t.heroIn ? '(clear)' : '✗'} · other ${t.win === 'other' ? '✓' : t.oth ? '(clear)' : '✗'} · tile ${t.win === 'tile' ? '✓' : '·'}</div>
+        <div>palette[<b>${t.ci}</b>] = ${sw(t.ci)} <b>#${D.palette[t.ci].toUpperCase()}</b> → rgb out</div></div>`;
+    if (html !== last) {
+      out.innerHTML = html; last = html;
+      zoomDraw(zc[0], (x, y) => TILES[t.slot * 256 + y * 16 + x], t.tx, t.ty, `tile slot ${t.slot}`);
+      if (t.heroIn) zoomDraw(zc[1], (x, y) => { const v = SPR[t.heroFr * 256 + y * 16 + x]; return v ? 16 + v : -1; }, t.hdx, t.hdy & 15, `sprite frame ${t.heroFr}`);
+      else if (t.oth) zoomDraw(zc[1], (x, y) => { const v = SPR[t.oth.f * 256 + y * 16 + x]; return v ? 16 + v : -1; }, t.odx, t.ody, `sprite frame ${t.oth.f}`);
+      else zc[1].f.hidden = true;
+    }
+  }
+  function draw() {
+    st.others = spawnSprites(st.cam, st.frames);
+    const ctx = scr.draw(st);
+    const [lx, ly] = sel;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(lx * 3 + 1.5, 0); ctx.lineTo(lx * 3 + 1.5, ly * 3 - 8); ctx.moveTo(lx * 3 + 1.5, ly * 3 + 11); ctx.lineTo(lx * 3 + 1.5, 720);
+    ctx.moveTo(0, ly * 3 + 1.5); ctx.lineTo(lx * 3 - 8, ly * 3 + 1.5); ctx.moveTo(lx * 3 + 11, ly * 3 + 1.5); ctx.lineTo(960, ly * 3 + 1.5);
+    ctx.stroke();
+    ctx.strokeStyle = '#ff2d55'; ctx.lineWidth = 2; ctx.strokeRect(lx * 3 - 1, ly * 3 - 1, 5, 5);
+    trace();
+  }
+  view.addEventListener('click', e => { sel = pointerPos(e, view, 320, 240); draw(); });
+  view.tabIndex = 0;
+  view.addEventListener('keydown', e => {
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (d) { e.preventDefault(); sel = [clamp(sel[0] + d[0], 0, 319), clamp(sel[1] + d[1], 0, 239)]; draw(); }
+  });
+  draw();
+  const step = fixed(60), paint = fixed(20);
+  animate(view, dt => { if (!REDUCED) step(dt, () => { st.frames = (st.frames + 1) & 255; }); paint(dt, draw); });
+})();
+
+// ==================================================================== 2-3 mushroom
+(function mushroom() {
+  const scr = new Screen($('#mush-c'), 3), r = $('#mush-r');
+  let lvl, g, st, f, endT;
+  const reset = () => { lvl = LEVEL0.slice(); g = new Game(lvl); g.place(334, 192); g.cam = 188; st = scene(lvl); f = 0; endT = 0; };
+  reset();
+  const play = playButton($('#mush-play'), !REDUCED);
+  const clip = chip($('#mush-clip'), true, null, ['mush_clip off', 'mush_clip on']);
+  const step = fixed(60);
+  chip($('#mush-slow'), false, v => { step.hz = v ? 12 : 60; });
+  $('#mush-replay').addEventListener('click', () => { reset(); play.set(true); });
+  function tickGame() {
+    f++;
+    playEvents(g.step(f >= 30 && f < 50, false));
+    if (g.big && !g.mu && g.growT === 0) endT++;
+    if (endT > 100 || f > 1000) reset();
+  }
+  function draw() {
+    g.state(st);
+    st.noClip = !clip.v;
+    const ctx = scr.draw(st), m = g.mu, S = 3;
+    let state = 'waiting', clipTxt = '0x3FF (off)';
+    if (m && m.st === 1) {
+      const mx = ((m.x >> 4) - g.cam) * S, my = (m.y >> 4) * S, cy = m.clip * S;
+      clipTxt = String(m.clip);
+      ctx.save();
+      ctx.setLineDash([8, 6]); ctx.lineWidth = 3; ctx.strokeStyle = '#ffe14d';
+      ctx.beginPath(); ctx.moveTo(mx - 60, cy); ctx.lineTo(mx + 108, cy); ctx.stroke();
+      if (clip.v) { ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255, 255, 255, .8)'; ctx.strokeRect(mx + 1, Math.max(my, cy) + 1, 46, my + 48 - Math.max(my, cy) - 2); }
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffe14d'; ctx.font = '600 26px "IBM Plex Mono", monospace'; ctx.textAlign = 'left';
+      ctx.fillText(`mush_clip = ${m.clip}`, mx + 116, cy + 9);
+      ctx.restore();
+      state = `rising (mu_t = ${m.t})`;
+    } else if (m) state = `sliding ${m.left ? 'left' : 'right'}`;
+    else if (g.big) state = 'eaten';
+    const nano = g.growT ? `growing, grow_t = ${g.growT}` : g.big ? 'big (hitbox 12×28)' : 'small (hitbox 12×16)';
+    r.innerHTML = `frame <b>${f}</b> · mushroom: <b>${state}</b> · mush_clip = <b>${clipTxt}</b> · Nano: <b>${nano}</b>`;
+  }
+  draw();
+  animate($('#mush-c'), dt => { if (play.on) step(dt, tickGame); draw(); });
+})();
+
+// ==================================================================== 3-1 step machine
+(function stepMachine() {
+  const lvl = new Uint8Array(4096);
+  for (let c = 0; c < 256; c++) { lvl[13 * 256 + c] = T.GROUND; lvl[14 * 256 + c] = T.GROUND; }
+  lvl[12 * 256 + 5] = T.HARD;
+  lvl[11 * 256 + 4] = T.COIN;
+  const X0 = 16, Y0 = 144, S = 5;
+  const scr = new Screen($('#sm-c'), S, 96, 80);
+  const st = scene(lvl);
+  st.page = 7;
+  const OLD = { x: 65, y: 173 }, NEW = { x: 66, y: 176 };
+  const P = {
+    A: [80, 178, 'head', 'r'], B: [80, 203, 'feet', 'r'], M: [80, 191, 'middle', 'r'], FL: [69, 208, 'floor L', 'dl'],
+    FR: [78, 208, 'floor R', 'dr'], UP: [74, 179, 'above', 'l'], C1: [74, 184, 'coin 1', 'l'], C2: [74, 204, 'coin 2', 'l'],
+  };
+  const STEPS = [
+    { n: '0', set: 'A', t: '<b>Tick.</b> S2 is held, so vx stays 36 (2.25 px a frame). Gravity: vy = 40 + 8 = <b>48</b>. Guess the new x: 67 + 2.25 → 69. Ask for the tile just past the right edge, at the <b>head</b>.' },
+    { n: '1', set: 'B', t: 'Ask for the same column at the <b>feet</b>.' },
+    { n: '2', set: 'M', get: 'A', t: 'Head answer: <b>sky</b>. Ask for the <b>middle</b> (14 px down), which only matters for big Nano.' },
+    { n: '3', get: 'B', t: 'Feet answer: <b>hard block, solid</b>.' },
+    { n: '4', set: 'FL', get: 'M', t: 'Middle: sky. One probe hit, so <b>stop at the wall</b>: x = 80 − 12 = 68, vx = 0. Falling, so the new y is 177 + 3 = 180. Ask for the tile <b>just below the feet</b>, left.' },
+    { n: '5', set: 'FR', t: 'Ask below the feet, right side.' },
+    { n: '6', get: 'FL', t: 'Left: <b>ground, solid</b>.' },
+    { n: '7', set: 'UP', get: 'FR', t: 'Right: ground. Falling onto something solid, so <b>land</b>: feet on the tile top, y = 208 − 28 = 180, vy = 0, on_ground = 1. It also asks for the block above the head, needed only after a head bump.' },
+    { n: '8–9', skip: true, t: 'Only after a head bump: a <code>?</code> block gives a coin or mushroom, or a brick breaks. No bump this frame, so skip to 10.' },
+    { n: '10', set: 'C1', t: 'Coins: ask for the tile at Nano\'s centre, 4 px below the head.' },
+    { n: '11', t: 'Nothing else to ask: wait one clock for the RAM.' },
+    { n: '12', get: 'C1', write: true, t: 'A <b>coin</b>! Write <b>sky</b> over it in the map, coins + 1, score + 200, start the coin sound.' },
+    { n: '13', set: 'C2', t: 'Ask for the tile 4 px above the feet.' },
+    { n: '14', t: 'Wait for the RAM.' },
+    { n: '15', get: 'C2', t: 'Sky: nothing to collect.' },
+    { n: '16', commit: true, t: '<b>Commit.</b> Store the new position (68, 180), scroll the camera if needed, pick the pose, tick the clock, move brick chunks, bring in a slime about to scroll into view.' },
+    { n: '17–21', t: 'Each of the 4 slime slots in turn, 5 clocks each: gravity, walk, turn at walls, land, then the touch test with Nano: stomp, shrink or die.' },
+    { n: '22–27', t: 'The mushroom: rise, or slide, turn and fall, then "eaten?". Then back to step 0 to wait for the next frame tick.' },
+  ];
+  const IDX_COIN = STEPS.findIndex(s => s.write), IDX_COMMIT = STEPS.findIndex(s => s.commit);
+  const list = $('#sm-list'), port = $('#sm-port');
+  STEPS.forEach((s, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="n">${s.n}</span><span class="t">${s.t}</span>`;
+    li.addEventListener('click', () => { play.set(false); go(i); });
+    list.appendChild(li);
+  });
+  let cur = 0, pulse = 0;
+  const tileAt = (x, y) => lvl[((y >> 4) << 8) | (x >> 4)];
+  const kind = id => id === T.COIN ? 'coin' : solid(id) ? 'solid' : 'sky';
+  function draw() {
+    lvl[11 * 256 + 4] = cur >= IDX_COIN ? T.SKY : T.COIN;
+    const at = cur >= IDX_COMMIT ? NEW : OLD;
+    st.hero = { x: at.x, y: at.y, f: cur >= IDX_COMMIT ? F.STAND : F.JUMP, vis: true, big: true };
+    const ctx = scr.draw(st, X0, Y0);
+    const tp = (x, y) => [(x - X0 + 0.5) * S, (y - Y0 + 0.5) * S];
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, .22)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= 96; x += 16) { ctx.moveTo(x * S + .5, 0); ctx.lineTo(x * S + .5, 400); }
+    for (let y = 0; y <= 80; y += 16) { ctx.moveTo(0, y * S + .5); ctx.lineTo(480, y * S + .5); }
+    ctx.stroke();
+    if (cur < IDX_COMMIT) {                          // hitbox of the guessed position
+      ctx.setLineDash([6, 5]); ctx.strokeStyle = 'rgba(255, 255, 255, .7)'; ctx.lineWidth = 2;
+      const nx = cur >= 4 ? 68 : 69, ny = cur >= 4 ? 180 : 177;
+      const [a, b] = tp(nx, ny);
+      ctx.strokeRect(a - S / 2, b - S / 2, 12 * S, 28 * S);
+      ctx.setLineDash([]);
+    }
+    // answers that have arrived so far: colour the tile
+    const COL = { solid: 'rgba(255, 60, 60, .45)', sky: 'rgba(80, 220, 140, .35)', coin: 'rgba(255, 210, 40, .55)' };
+    for (let i = 0; i <= cur; i++) {
+      const g = STEPS[i].get;
+      if (!g) continue;
+      const [x, y] = P[g], k = kind(i === IDX_COIN ? T.COIN : tileAt(x, y));
+      const tx = ((x >> 4) * 16 - X0) * S, ty = ((y >> 4) * 16 - Y0) * S;
+      ctx.fillStyle = i === cur ? COL[k] : COL[k].replace(/[\d.]+\)$/, '.18)');
+      ctx.fillRect(tx, ty, 16 * S, 16 * S);
+    }
+    // probe points asked so far; the current one pulses
+    ctx.font = '600 15px "IBM Plex Mono", monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (let i = 0; i <= cur; i++) {
+      const s = STEPS[i].set;
+      if (!s) continue;
+      const [x, y, name] = P[s], [a, b] = tp(x, y), now = i === cur;
+      ctx.fillStyle = now ? '#ffe14d' : 'rgba(255, 255, 255, .8)';
+      ctx.beginPath(); ctx.arc(a, b, now ? 6 : 4, 0, Math.PI * 2); ctx.fill();
+      if (now) {
+        ctx.strokeStyle = '#ffe14d'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(a, b, 10 + 8 * pulse, 0, Math.PI * 2); ctx.stroke();
+      }
+      const side = P[s][3], right = side.endsWith('r');
+      const lx = right ? a + 12 : a - 12, ly = side.startsWith('d') ? b + 24 : b;
+      ctx.textAlign = right ? 'left' : 'right';
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0, 0, 0, .75)';
+      ctx.strokeText(name, lx, ly); ctx.fillStyle = now ? '#ffe14d' : '#fff'; ctx.fillText(name, lx, ly);
+    }
+    ctx.restore();
+    // the map port: asked this clock, inside the RAM, answering this clock
+    const s = STEPS[cur], p = STEPS[cur - 1];
+    const q = k => { const [x, y, name] = P[k]; return `<b>${name}</b>(${x}, ${y}) → tile [${y >> 4}][${x >> 4}]`; };
+    const ans = s.get ? `${q(s.get)} = <b>${tileName(s.get === 'C1' ? T.COIN : tileAt(P[s.get][0], P[s.get][1]))}</b>` : '';
+    port.innerHTML = `<div class="${s.set ? 'full' : ''}"><b>address in</b>${s.set ? q(s.set) : '—'}</div>
+      <div class="${p && p.set && !p.skip && !s.skip ? 'full' : ''}"><b>RAM reading</b>${p && p.set && !s.skip ? q(p.set) : '—'}</div>
+      <div class="${s.get ? 'full' : ''}"><b>data out</b>${ans || '—'}</div>`;
+    [...list.children].forEach((li, i) => { li.classList.toggle('on', i === cur); li.classList.toggle('done', i < cur); });
+  }
+  function go(i) { cur = clamp(i, 0, STEPS.length - 1); pulse = 0; draw(); }
+  const play = playButton($('#sm-play'), false, v => { if (v && cur === STEPS.length - 1) go(0); });
+  $('#sm-prev').addEventListener('click', () => { play.set(false); go(cur - 1); });
+  $('#sm-next').addEventListener('click', () => { play.set(false); go(cur + 1); });
+  go(0);
+  let acc = 0;
+  animate($('#sm-c'), dt => {
+    pulse = (pulse + dt / 700) % 1;
+    if (play.on) {
+      acc += dt;
+      if (acc > 1500) { acc = 0; if (cur === STEPS.length - 1) play.set(false); else go(cur + 1); }
+    }
+    if (!REDUCED || play.on) draw();
+  });
+})();
+
+// ==================================================================== 3-2 jump lab
+(function lab() {
+  const lvl = LEVEL0.slice();
+  for (let r = 0; r < 15; r++) for (let c = 0; c < 256; c++) {
+    const a = r * 256 + c;
+    if (r < 13) { if (solid(lvl[a]) || lvl[a] === T.COIN) lvl[a] = T.SKY; }
+    else lvl[a] = T.GROUND;
+  }
+  const fig = $('#lab-fig'), scr = new Screen($('#lab-c'), 3), plot = $('#lab-plot'), pctx = plot.getContext('2d'), r = $('#lab-r');
+  const g = new Game(lvl), st = scene(lvl);
+  g.place(60, 192);
+  let jump = false, run = false, demo = null, trails = [], trail = null, hist = [];
+  const hold = (btn, set) => {
+    const on = e => { e.preventDefault(); set(true); btn.classList.add('held'); if (btn.setPointerCapture) btn.setPointerCapture(e.pointerId); audio(); };
+    const off = () => { set(false); btn.classList.remove('held'); };
+    btn.addEventListener('pointerdown', on);
+    btn.addEventListener('pointerup', off);
+    btn.addEventListener('pointercancel', off);
+    btn.addEventListener('lostpointercapture', off);
+    btn.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); set(true); btn.classList.add('held'); } });
+    btn.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') off(); });
+  };
+  hold($('#lab-jump'), v => { jump = v; demo = null; });
+  hold($('#lab-run'), v => { run = v; demo = null; });
+  const JK = ['Space', 'ArrowUp', 'KeyW', 'KeyK'], RK = ['ArrowRight', 'KeyD', 'KeyL'];
+  fig.addEventListener('keydown', e => {
+    if (JK.includes(e.code)) { e.preventDefault(); jump = true; demo = null; }
+    if (RK.includes(e.code)) { e.preventDefault(); run = true; demo = null; }
+  });
+  fig.addEventListener('keyup', e => { if (JK.includes(e.code)) jump = false; if (RK.includes(e.code)) run = false; });
+  fig.addEventListener('focusout', () => { jump = false; run = false; });
+  $('#lab-c').addEventListener('pointerdown', () => fig.focus());
+  $('#lab-demo').addEventListener('click', () => { demo = 0; trails = []; });
+  $('#lab-clear').addEventListener('click', () => { trails = []; });
+
+  let inJ = false, inR = false;
+  function tickGame() {
+    let bj = jump, br = run;
+    if (demo !== null) {
+      demo++;
+      br = demo > 5 && demo < 250;
+      bj = demo === 40 || (demo >= 130 && demo < 160);
+      if (demo > 260) demo = null;
+    }
+    inJ = bj; inR = br;
+    const wasGround = g.onGround, vyBefore = g.vy, before = [(g.px >> 4) + 6, (g.py >> 4) + 8, (g.py >> 4) + 16, g.py];
+    const ev = g.step(bj, br);
+    playEvents(ev);
+    const cx = (g.px >> 4) + 6, feet = (g.py >> 4) + 16;
+    if (ev.includes('jump')) {
+      trail = { pts: [[before[0], before[1], false]], top: before[3], start: before[3] };
+      trails.push(trail);
+      if (trails.length > 6) trails.shift();
+    }
+    if (trail) {
+      trail.pts.push([cx, (g.py >> 4) + 8, bj && (ev.includes('jump') ? -JUMP_V : vyBefore) < 0]);   // weak gravity this frame
+      trail.top = Math.min(trail.top, g.py);
+      if (g.onGround && !wasGround) trail = null;
+    }
+    hist.push([g.vy, bj && g.vy < 0]);
+    if (hist.length > 240) hist.shift();
+    g.cam = ((g.px >> 4) - 110) & 0xFFF;
+  }
+  function draw() {
+    g.state(st);
+    const ctx = scr.draw(st), S = 3;
+    ctx.save();
+    // height ruler, one tick per tile above the ground
+    ctx.font = '600 20px "IBM Plex Mono", monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let k = 1; k <= 5; k++) {
+      const y = (208 - k * 16) * S;
+      ctx.strokeStyle = 'rgba(255, 255, 255, .35)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(938, y); ctx.lineTo(960, y); ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 255, 255, .85)'; ctx.fillText(`${k * 16} px`, 930, y);
+    }
+    for (const tr of trails) {
+      for (const [x, y, held] of tr.pts) {
+        const sx = ((x - g.cam) & 0xFFF);
+        if (sx > 330) continue;
+        ctx.fillStyle = held ? '#2451d6' : '#f07a3c';
+        ctx.beginPath(); ctx.arc(sx * S, y * S, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, .9)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      const h = tr.start - tr.top;
+      if (h > 0) {
+        const apex = tr.pts.reduce((a, p) => (p[1] < a[1] ? p : a));
+        const sx = ((apex[0] - g.cam) & 0xFFF);
+        if (sx < 330) {
+          ctx.font = '600 24px "IBM Plex Mono", monospace'; ctx.textAlign = 'center';
+          ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0, 0, 0, .7)';
+          const label = `${(h / 16).toFixed(1)} px`;
+          ctx.strokeText(label, sx * S, apex[1] * S - 30); ctx.fillStyle = '#fff'; ctx.fillText(label, sx * S, apex[1] * S - 30);
+        }
+      }
+    }
+    ctx.restore();
+    // vy graph, drawn at the device's resolution
+    const ink = cssVar('--ink'), mute = cssVar('--muted'), line = cssVar('--line-strong');
+    const dpr = window.devicePixelRatio || 1, PW = plot.clientWidth, PH = plot.clientHeight;
+    if (plot.width !== Math.round(PW * dpr)) { plot.width = Math.round(PW * dpr); plot.height = Math.round(PH * dpr); }
+    pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pctx.clearRect(0, 0, PW, PH);
+    const Y = v => PH / 2 - 6 + v * (PH - 30) / 200;
+    pctx.font = '500 11.5px "IBM Plex Mono", monospace'; pctx.textBaseline = 'middle';
+    for (const [v, lab] of [[0, 'vy = 0'], [96, 'VY_MAX 96: fastest fall'], [-84, '−84: launch']]) {
+      pctx.strokeStyle = line; pctx.lineWidth = 1; pctx.setLineDash(v ? [5, 5] : []);
+      pctx.beginPath(); pctx.moveTo(0, Y(v)); pctx.lineTo(PW, Y(v)); pctx.stroke();
+      pctx.fillStyle = mute; pctx.textAlign = 'left'; pctx.fillText(lab, 4, Y(v) + (v > 0 ? -8 : 8));
+    }
+    pctx.setLineDash([]);
+    pctx.lineWidth = 2.5;
+    const dx = PW / 240;
+    for (let i = 1; i < hist.length; i++) {
+      pctx.strokeStyle = hist[i][1] ? '#2451d6' : '#f07a3c';
+      pctx.beginPath(); pctx.moveTo((i - 1) * dx, Y(hist[i - 1][0])); pctx.lineTo(i * dx, Y(hist[i][0])); pctx.stroke();
+    }
+    pctx.fillStyle = ink; pctx.textAlign = 'right';
+    pctx.fillText('vy in 1/16 px per frame, last 4 s', PW - 4, 9);
+    r.innerHTML = `px = <b>${g.px}</b> (${(g.px / 16).toFixed(2)} px) · py = <b>${g.py}</b> (${(g.py / 16).toFixed(2)} px) · vx = <b>${g.vx}</b> · vy = <b>${g.vy}</b> · on_ground = <b>${+g.onGround}</b> · S1 <b>${+inJ}</b> S2 <b>${+inR}</b>`;
+  }
+  draw();
+  const step = fixed(60);
+  animate(fig, dt => { step(dt, tickGame); draw(); });
+})();
+
+// ==================================================================== 3-3 bricks
+(function bricks() {
+  let col = -1;
+  for (let c = 30; c < 200 && col < 0; c++) {
+    const ok = LEVEL0[9 * 256 + c] === T.BRICK && LEVEL0[9 * 256 + c - 1] === T.SKY && LEVEL0[9 * 256 + c + 1] === T.SKY
+      && LEVEL0[13 * 256 + c] === T.GROUND && [10, 11, 12].every(rw => [-1, 0, 1].every(d => !solid(LEVEL0[rw * 256 + c + d])));
+    if (ok) col = c;
+  }
+  if (col < 0) col = 20;
+  const scr = new Screen($('#brick-c'), 3), r = $('#brick-r');
+  let lvl, g, st, f, doneT, note;
+  const reset = () => {
+    lvl = LEVEL0.slice(); g = new Game(lvl); g.place(col * 16 + 2, 192); g.cam = col * 16 - 150;
+    g.cap = !bug.v; st = scene(lvl); f = 0; doneT = 0; note = '';
+  };
+  const play = playButton($('#brick-play'), !REDUCED);
+  const bug = chip($('#brick-bug'), false, () => { if (g) reset(); });
+  reset();
+  $('#brick-replay').addEventListener('click', () => { reset(); play.set(true); });
+  function tickGame() {
+    f++;
+    playEvents(g.step(f >= 20 && f < 34, false));
+    for (const [i, d] of g.deb.entries()) if (d.wrapped && !note) {
+      note = `chunk ${i}: vy = +${d.wrapped[0]} + 6 = +${d.wrapped[0] + 6}, which doesn't fit in 8 bits → <b style="color:var(--red)">${d.wrapped[1]}</b>, and it flies back up`;
+    }
+    const outOfView = d => !d.on || (d.x >> 4) - g.cam < -16 || (d.x >> 4) - g.cam > 336 || (d.y >> 4) < -64;
+    if (g.broke !== undefined && g.deb.length && g.deb.every(outOfView)) doneT++;
+    if (doneT > 40 || f > 700) reset();
+  }
+  function draw() {
+    g.state(st);
+    const ctx = scr.draw(st), S = 3;
+    ctx.save();
+    for (const [i, d] of g.deb.entries()) {
+      ctx.fillStyle = i < 2 ? 'rgba(255, 255, 255, .85)' : 'rgba(255, 225, 77, .9)';
+      for (let k = 0; k < d.path.length; k += 1) {
+        const [x, y] = d.path[k], sx = x - g.cam;
+        if (sx < 0 || sx > 320 || y < 0 || y > 240) continue;
+        ctx.fillRect(sx * S - 2, y * S - 2, 4, 4);
+      }
+    }
+    ctx.restore();
+    const a = 9 * 256 + col, t = lvl[a];
+    let txt = `map[row 9][col ${col}] = <b>${t}</b> (${tileName(t)})`;
+    if (t === T.SKY) txt += ' · written by port B when the brick broke';
+    if (g.deb.length) {
+      txt += '<br>' + g.deb.map((d, i) => `chunk ${i}: ${d.on ? `y ${(d.y >> 4)}, vy <b>${d.vy > 0 ? '+' : ''}${d.vy}</b>` : 'gone'}`).join(' · ');
+    }
+    if (note) txt += '<br>' + note;
+    r.innerHTML = txt;
+  }
+  draw();
+  const step = fixed(60);
+  animate($('#brick-c'), dt => { if (play.on) step(dt, tickGame); draw(); });
+})();
+
+// ==================================================================== 3-4 sound board
+(function soundBoard() {
+  const grid = $('#sfx-grid'), r = $('#sfx-r');
+  const NAMES = { jump: 'jump', coin: 'coin', stomp: 'stomp', bump: 'bump', die: 'lose a life', clear: 'course clear',
+                  '1up': 'extra life', break: 'brick breaks', sprout: 'mushroom appears', power: 'power-up', shrink: 'shrink' };
+  const NN = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+  const noteName = hz => { const m = Math.round(69 + 12 * Math.log2(hz / 440)); return NN[m % 12] + (Math.floor(m / 12) - 1); };
+  const lo = Math.log2(150), hi = Math.log2(2400);
+  for (const [key, notes] of Object.entries(SFX)) {
+    const total = notes.reduce((a, n) => a + n[1], 0);
+    let x = 0, bars = '';
+    for (const [half, len] of notes) {
+      const y = 34 - (Math.log2(noteHz(half)) - lo) / (hi - lo) * 30;
+      bars += `<rect x="${x / total * 100}" y="${y - 2}" width="${Math.max(0.8, len / total * 100 - 0.8)}" height="4" rx="1" fill="currentColor"/>`;
+      x += len;
+    }
+    const b = document.createElement('button');
+    b.className = 'sfx';
+    b.innerHTML = `<b>${NAMES[key]}</b><small>${notes.length} note${notes.length > 1 ? 's' : ''} · ${Math.round(total / 60 * 1000)} ms</small>
+      <svg viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true">${bars}<line class="ph" x1="0" y1="0" x2="0" y2="38" opacity="0"/></svg>`;
+    b.addEventListener('click', () => {
+      playSfx(key, true);
+      r.innerHTML = `<b>${NAMES[key]}</b>: ` + notes.map(([half, len]) => {
+        const hz = noteHz(half);
+        return `half period ${fmt(half)} → <b>${fmt(hz)} Hz</b> (${noteName(hz)}) for ${len} frame${len > 1 ? 's' : ''}`;
+      }).join(' · then ');
+      const ph = b.querySelector('.ph'), t0 = performance.now(), dur = total / 60 * 1000;
+      b.classList.add('on');
+      const run = now => {
+        const p = (now - t0) / dur;
+        if (p >= 1) { ph.setAttribute('opacity', '0'); b.classList.remove('on'); return; }
+        ph.setAttribute('x1', p * 100); ph.setAttribute('x2', p * 100); ph.setAttribute('opacity', '1');
+        requestAnimationFrame(run);
+      };
+      requestAnimationFrame(run);
+    });
+    grid.appendChild(b);
+  }
+})();
+})();
+</script>
+</body>
+</html>

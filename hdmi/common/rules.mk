@@ -12,14 +12,18 @@ CST     := $(COMMON)/tangnano9k.cst
 CORE    := $(COMMON)/dvi_tx.v $(COMMON)/tmds_encoder.v
 # Placer seed; change it if the HDMI clock check below fails
 SEED    ?= 1
+# Pixel clock in MHz, for timing analysis
+FREQ    ?= 25.2
+# Extra synth_gowin options
+SYNTH_OPTS ?=
 
 all: $(NAME).fs
 
 $(NAME).json: $(SRC) $(CORE) $(DEPS) $(DATA)
-	yosys -q -l $(NAME)-yosys.log -p "read_verilog -I. $(SRC) $(CORE); synth_gowin -top top -json $@"
+	yosys -q -l $(NAME)-yosys.log -p "read_verilog -I. $(SRC) $(CORE); synth_gowin -top top $(SYNTH_OPTS) -json $@"
 
 $(NAME)_pnr.json: $(NAME).json $(CST)
-	nextpnr-himbaechel-gowin -q -l $(NAME)-nextpnr.log --seed $(SEED) --freq 25.2 --json $< --write $@ \
+	nextpnr-himbaechel-gowin -q -l $(NAME)-nextpnr.log --seed $(SEED) --freq $(FREQ) --json $< --write $@ \
 		--device $(DEVICE) --vopt family=$(FAMILY) --vopt cst=$(CST)
 	@# The 126 MHz serial clock must reach CLKDIV over its dedicated route, or the
 	@# serialisers' fast and pixel clocks can end up misaligned.

@@ -12,3 +12,7 @@ hdmi/*/*.png
 hdmi/*/scene_params.vh
 hdmi/*/pong_pal.vh
 hdmi/*/plat_params.vh
+hdmi/*/term_params.vh
+hdmi/*/term_uni.vh
+hdmi/*/.baud-*
+hdmi/terminal/tb_*

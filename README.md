@@ -2,8 +2,8 @@
 
 FPGA designs for the Sipeed Tang Nano 9K (Gowin GW1NR-9C), built entirely with the open-source
 toolchain. They go from blinking LEDs up to a full-screen animated pixel-art scene, Pong on a
-simulated arcade CRT and NANO QUEST, a small NES-style platformer, all drawn live by the FPGA
-over HDMI and played with the board's two buttons.
+simulated arcade CRT, NANO QUEST, a small NES-style platformer, and NANO TERM, a serial terminal
+that runs vim and top, all drawn live by the FPGA over HDMI.
 
 ![NANO QUEST gameplay, recorded from the Verilog](media/nano-quest.gif)
 
@@ -21,6 +21,7 @@ game's real tiles, sprites and level.
 | `hdmi/sunset/` | A parallax pixel-art sunset over a lake |
 | `hdmi/pong-classic/` | Pong against the computer on a monochrome arcade CRT |
 | `hdmi/platformer/` | NANO QUEST: run, jump, stomp slimes, collect coins and reach the flag |
+| `hdmi/terminal/` | NANO TERM: a terminal on the USB serial port, with UTF-8, 256 colours and xterm escape sequences |
 | `hdmi/common/` | Shared HDMI output, DSP multiplier wrapper, pin constraints and build rules |
 | `docs/` | The explainer page (GitHub Pages); `page_data.py` copies the game's data into it |
 
@@ -85,6 +86,103 @@ never ends up inside a solid tile, never jumps in mid-air and never loses the gr
 standing, and every smashed brick is really gone from the level. Then it renders the title, world
 card, gameplay and course-clear screens to PNG.
 
+### NANO TERM
+
+![The NANO TERM demo, rendered by the model at the real 2 Mbaud line speed](media/nano-term.gif)
+
+A terminal for the board's USB serial port: whatever is sent to it appears on an 80×28 character
+screen over HDMI, under a title bar and above a status bar. It is a real terminal rather than a
+text printer. It understands UTF-8 and the VT100/xterm escape sequences that shells, editors and
+ncurses programs use, so vim, less, man, nano and top run on it (`TERM=xterm-256color`). It
+starts as a tiny shell of its own, so you can also just type at it:
+
+```
+$ 5 + 5
+10
+$ 1200 - 2025
+-825
+$ help
+  help            this list
+  clear           clear the screen
+  theme           the next colour theme: colour, green or amber
+  crt             CRT scanlines on or off
+  12 + 30 - 5     add and subtract whole numbers
+  ...
+```
+
+```sh
+cd hdmi/terminal
+make load                                   # or make flash
+echo 'hello, world' > /dev/ttyUSB1          # the board's second USB serial port, at any speed
+minicom -D /dev/ttyUSB1                     # type at its built-in shell, at any speed
+./nanoterm.py shell                         # your shell on the HDMI screen, typed from this keyboard
+./nanoterm.py type                          # type at the built-in shell without minicom
+./nanoterm.py demo                          # the demo above
+```
+
+![NANO TERM's boot screen](media/nano-term-boot.png)
+
+- **Screen:** 720×480 @ 60 Hz in 9×16-pixel character cells, as in VGA text mode: the 9th
+  column keeps letters apart, and box-drawing and block characters continue into it so lines join.
+- **Characters:** an original 8×16 font with ASCII and Latin-1 (accented letters are composed),
+  box drawing, block elements, arrows, shapes, check marks and powerline separators. Braille
+  (2×4 dots a cell, for graphs) is drawn straight from the dot pattern. Double-width characters
+  such as CJK and emoji take two cells as a placeholder, so programs' layouts stay right.
+- **Colour and attributes:** 256 colours (24-bit colour is rounded to them), bold (as bright
+  colours), dim, italic (slanted), underline, blink, strike-through and reverse.
+- **Escape sequences:** cursor movement, erasing, scroll regions, inserting and deleting
+  characters and lines, insert mode, repeat, tabs, the DEC line-drawing set, the alternate screen,
+  saved cursors, cursor shapes, reverse screen and window titles (shown in the title bar). It
+  answers cursor-position and device-attribute queries on the serial port's other direction.
+- **Any serial speed:** 9600 to 3000000 baud, found from the line itself (see below).
+- **Bars:** the title bar shows the window title and a sparkline of bytes received per second;
+  the status bar shows the serial speed, the cursor position, bytes received, uptime and the
+  colour theme.
+- **Built-in shell:** a `$ ` prompt for typing at the terminal directly (see below).
+- **Buttons:** S1 cycles the colour theme (colour, green phosphor, amber phosphor), and held for
+  half a second brings the built-in shell back; S2 toggles CRT scanlines. LEDs: receiving,
+  sending, measuring the speed, overrun.
+
+![256 colours and 24-bit colour gradients](media/nano-term-colours.png)
+![The rain scene in the green phosphor theme with CRT scanlines](media/nano-term-rain.png)
+
+Bytes go from the UART into a 2 KB FIFO, and the terminal engine, a state machine, parses them
+and edits a screen memory of 62 rows × 80 cells: the main screen, the alternate screen and the
+two bars, with each cell's glyph, colours and attributes in 32 bits. Scrolling rotates a table
+of rows instead of moving text, so it costs 80 clocks (blanking the new row) whatever the scroll
+region. The renderer reads each cell once per 9 pixels (the engine has the read port the rest
+of the time), looks up the font and the palette, and adds the effects six clocks behind the
+beam; there is no frame buffer. `nanoterm.py shell` runs your shell in an 80×28 pseudo-terminal,
+passes your keys to it and its output to the board, and the board's replies back to the shell.
+
+There is no speed to set (9600, 19200, 38400, 57600, 115200, 230400, 460800, 1 M, 2 M and
+3 Mbaud all work). The bytes are decoded from a copy of the line delayed by 0.6 ms (10 ms for
+the speeds up to 38400), while a second receiver watches the live line. A framing error, or a
+pulse clearly shorter than a bit, starts a measurement of the live line: the shortest of the
+next few pulses is one bit, which picks the speed. That takes less time than the delay, so the
+first byte sent at a new speed is decoded at the new speed: nothing is lost, and nothing is
+shown decoded at the wrong speed. This also sidesteps a quirk of the board's USB chip, a BL702
+posing as an FTDI chip, which only switches to a new baud rate the next time the port is opened.
+
+At power-up the terminal is a tiny shell for typing at it directly, since normally a terminal's
+keys go to a computer that decides what to show. It shows a `$ ` prompt; Backspace (BS or DEL)
+rubs out, and Enter reads the line back from the screen and runs it: `help`, `clear`, `theme`
+and `crt`, or a sum of 32-bit integers such as `5 + 5` or `7 - 12 + 100`, whose value is printed
+on the next line. Arrow and editing keys are ignored. What the shell prints comes from a small
+text ROM and goes through the terminal like received text, so the help can use colours. Any other escape sequence means a
+program is driving the terminal, and the shell steps aside until `CSI ? 2112 h` (which
+`nanoterm.py` sends when it finishes) or S1 held down brings it back.
+
+It uses 59% of the LUTs (plus 28% as adders) and 22 of the 26 block RAMs, and meets timing at
+44 MHz against the 27 MHz pixel clock. That is a fairly full chip, so it is synthesised without
+the wide-LUT muxes (`-nowidelut`, which saves about 800 LUTs here) and built with placer seed 2;
+if a build cannot place the design, or trips the clock-route check, try another `SEED=n`. Check a
+new build on the board with `make check` too: one earlier build met timing and passed every
+simulation, yet scrolled wrongly on the board, differently on each load; eight builds with other
+seeds all passed. On the board it keeps up with 2 Mbaud indefinitely (a
+483 KB stream arrives in 3.05 s with the screen exactly matching the model), and `make check`
+passes at speeds from 9600 to 3 Mbaud in turn without a reload.
+
 ### Pong
 
 You are the left paddle: **S1** moves up, **S2** moves down, and either button starts a game.
@@ -110,7 +208,8 @@ update is spread over four clocks after each frame so it meets timing.
 The PLL turns the 27 MHz oscillator into a 126 MHz serial clock, `CLKDIV` divides it by 5 to the
 25.2 MHz pixel clock, `tmds_encoder.v` does the TMDS 8b/10b encoding, and `OSER10` serialisers
 drive the HDMI pins through emulated-LVDS buffers. A design only supplies a colour for each
-`(x, y)` a fixed number of clocks later.
+`(x, y)` a fixed number of clocks later. `MODE=1` gives 720×480 instead (a 135 MHz serial clock
+and 27 MHz pixel clock), which NANO TERM uses for its 9-pixel-wide character cells.
 
 ## Toolchain
 
@@ -159,3 +258,16 @@ with a message; rebuild with another `SEED=n` if it happens.
   idle player, a bot player, the colour switch) checking that paddles and ball stay on the field
   and games finish, then renders attract, in-game, game-over and green-phosphor frames to PNG.
 - `platformer/`, `make sim`: the bot playthrough described above, plus screens rendered to PNG.
+- `terminal/`, `make sim`: the terminal engine against the Python model (`term_model.py`) on
+  every supported control and escape sequence, a session at the built-in shell, random streams
+  of text, UTF-8 (valid and broken) and escape sequences, and any recorded sessions given to
+  `term_test.py`. The screen, cursor, modes, both bars and every reply must match exactly,
+  including screen checksums along the way. Then the serial port at the bit level: a sender
+  changes speed (9600 to 3 Mbaud, some with its clock 2.5% off, and single keystrokes) and every
+  byte must arrive intact, including those sent while the speed is measured. Then four frames
+  rendered by the Verilog and compared pixel for pixel with the model's renderer (all three
+  themes and the scanlines). Recorded sessions of vim, less, man, nano, top and bash also
+  matched, and the model agreed with pyte, an independent terminal emulator, on those sessions.
+  With the board loaded, `make check` streams the same tests to it at full speed. After each
+  part the FPGA sends back every cell on its screen (`CSI 998 n`) and the checksum, and both must
+  match the model exactly; on a mismatch it prints the rows that differ.

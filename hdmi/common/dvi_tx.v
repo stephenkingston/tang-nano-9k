@@ -1,18 +1,20 @@
-// Tang Nano 9K: 640x480 @ 60 Hz video out of the HDMI port (DVI signalling).
+// Tang Nano 9K: 640x480 or 720x480 @ 60 Hz video out of the HDMI port (DVI signalling).
 //
-// 27 MHz --rPLL--> 126 MHz serial clock --CLKDIV/5--> 25.2 MHz pixel clock.
+// MODE 0: 640x480. 27 MHz --rPLL--> 126 MHz serial clock --CLKDIV/5--> 25.2 MHz pixel clock.
+// MODE 1: 720x480 (480p, as in VGA text mode's 9-pixel-wide characters). 135 MHz -> 27 MHz.
 // Each pixel is TMDS encoded to 10 bits and shifted out by an OSER10 (DDR, 5 fast clocks).
 //
 // The scan position (x, y) is output every pixel clock; the caller must present the
 // colour of that pixel on rgb exactly PIPE clocks later. Sync and blanking are delayed
 // by the same amount so everything lines up.
 module dvi_tx #(
-    parameter PIPE = 1                  // clocks from (x, y) to the matching rgb
+    parameter PIPE = 1,                 // clocks from (x, y) to the matching rgb
+    parameter MODE = 0                  // 0: 640x480, 1: 720x480
 ) (
     input  wire        clk_27,          // 27 MHz oscillator
     output wire        clk_pix,         // 25.2 MHz pixel clock
     output wire        reset,           // high until the PLL is locked
-    output reg  [9:0]  x = 10'd0,       // 0..799, visible when < 640
+    output reg  [9:0]  x = 10'd0,       // 0..799 (0..857), visible when < 640 (720)
     output reg  [9:0]  y = 10'd0,       // 0..524, visible when < 480
     output wire        frame,           // one-clock pulse at the start of vertical blanking
     input  wire [23:0] rgb,             // {r, g, b} for the pixel issued PIPE clocks ago
@@ -27,9 +29,9 @@ module dvi_tx #(
     rPLL #(
         .FCLKIN("27"),
         .DEVICE("GW1N-9C"),
-        .IDIV_SEL(2),               // 27 / 3  =   9 MHz reference
-        .FBDIV_SEL(13),             //  9 * 14 = 126 MHz out
-        .ODIV_SEL(4),               // VCO = 126 * 4 = 504 MHz
+        .IDIV_SEL(MODE ? 0 : 2),    // 27 / 3  =   9 MHz reference   (or 27 / 1)
+        .FBDIV_SEL(MODE ? 4 : 13),  //  9 * 14 = 126 MHz out         (or 27 * 5 = 135 MHz)
+        .ODIV_SEL(4),               // VCO = 126 * 4 = 504 MHz       (or 540 MHz)
         .DYN_IDIV_SEL("false"),
         .DYN_FBDIV_SEL("false"),
         .DYN_ODIV_SEL("false"),
@@ -78,9 +80,9 @@ module dvi_tx #(
         if (!pll_lock)        rst_cnt <= 4'd0;
         else if (!rst_cnt[3]) rst_cnt <= rst_cnt + 1'b1;
 
-    // ---------------------------------------------------------------- 640x480 @ 60 Hz timing
-    localparam H_ACTIVE = 640, H_FP = 16, H_SYNC = 96, H_TOTAL = 800;
-    localparam V_ACTIVE = 480, V_FP = 10, V_SYNC = 2,  V_TOTAL = 525;
+    // ---------------------------------------------------------------- 640x480 / 720x480 @ 60 Hz timing
+    localparam H_ACTIVE = MODE ? 720 : 640, H_FP = 16, H_SYNC = MODE ? 62 : 96, H_TOTAL = MODE ? 858 : 800;
+    localparam V_ACTIVE = 480, V_FP = MODE ? 9 : 10, V_SYNC = MODE ? 6 : 2, V_TOTAL = 525;
 
     always @(posedge clk_pix) begin
         if (reset) begin

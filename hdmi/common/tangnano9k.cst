@@ -41,3 +41,9 @@ IO_PORT "btn[1]" IO_TYPE=LVCMOS18 PULL_MODE=UP;
 // Optional piezo buzzer between this pin and GND (Pong)
 IO_LOC  "beep" 25;
 IO_PORT "beep" IO_TYPE=LVCMOS33 DRIVE=8;
+
+// USB serial port: the BL702 USB chip's second interface (/dev/ttyUSB1 on Linux)
+IO_LOC  "uart_rx" 18;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "uart_tx" 17;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;

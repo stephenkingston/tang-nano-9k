@@ -14,8 +14,11 @@ sim: $(DATA)
 	vvp -n scene_tb.vvp
 	python3 scene_gen.py --check scene_frame.hex --frame $(FRAME)
 
-# Render the animation to an MP4 with the reference model (needs ffmpeg)
+# Render the animation with the reference model: an MP4 (needs ffmpeg) and a GIF
 video:
 	python3 scene_video.py --seconds 30 --out ../../media/scene.mp4
 
-.PHONY: sim video
+gif:
+	python3 scene_video.py --seconds 12 --scale 2 --step 3 --out ../../media/scene.gif
+
+.PHONY: sim video gif

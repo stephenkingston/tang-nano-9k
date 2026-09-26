@@ -21,11 +21,12 @@ over HDMI and played with the board's two buttons.
 
 ### The sunset
 
-![Pixel-art sunset rendered by the FPGA](media/scene.png)
+![Pixel-art sunset rendered by the FPGA](media/scene.gif)
 
-**[Watch 30 seconds of it (media/scene.mp4)](media/scene.mp4).** The video was rendered with the
-Python reference model, which matches the hardware pixel for pixel, so it is exactly what the
-board shows from power-up.
+The GIF (12 seconds from power-up, at 20 fps) and a
+**[longer 30-second video (media/scene.mp4)](media/scene.mp4)** are rendered with the Python
+reference model, which matches the hardware pixel for pixel, so they are exactly what the board
+shows. `make gif` and `make video` in `hdmi/sunset` regenerate them.
 
 The scene is 320×240 pixels, each drawn as a 2×2 block on a 640×480 @ 60 Hz screen. There is no
 frame buffer: the FPGA computes the colour of every pixel as the screen is scanned out, 25.2

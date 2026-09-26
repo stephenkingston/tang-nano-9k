@@ -19,4 +19,8 @@ sim: $(DATA)
 		vvp -n plat_frame_tb.vvp && python3 ../common/frame2png.py plat_frame.hex plat_$$name.png || exit 1; \
 	done
 
-.PHONY: sim
+# Record a gameplay GIF from the Verilog (the bot plays), using all CPU cores
+gif: $(DATA)
+	python3 plat_gif.py --out ../../media/nano-quest.gif
+
+.PHONY: sim gif

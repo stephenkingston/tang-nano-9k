@@ -5,7 +5,7 @@ toolchain. They go from blinking LEDs up to a full-screen animated pixel-art sce
 simulated arcade CRT and NANO QUEST, a small NES-style platformer, all drawn live by the FPGA
 over HDMI and played with the board's two buttons.
 
-![NANO QUEST, an NES-style platformer running on the FPGA](media/nano-quest.png)
+![NANO QUEST gameplay, recorded from the Verilog](media/nano-quest.gif)
 
 ## Designs
 
@@ -62,6 +62,9 @@ dual-port block RAM: the renderer reads it for every pixel while the game reads 
 After every frame the game runs a sequence of steps, one per clock, reading the level one tile
 at a time for collisions. It uses about a quarter of the logic and 15 block RAMs and meets
 timing at 50 MHz.
+
+The GIF above is recorded from the Verilog itself: `make gif` has the bot play in simulation
+and saves every other frame, so it is exactly what the board draws.
 
 `make sim` has a bot play the course: it always runs and jumps at walls, pits and slimes. The
 test fails unless the bot reaches the flag, the hero never ends up inside a solid tile, never

@@ -9,7 +9,8 @@ $(DATA) &: platformer_gen.py
 
 # The bot plays the game (it must reach the flag), then a few screens are rendered to PNG
 FRAMES := title:TICKS=60 card:START=1,TICKS=40 play:START=1,TICKS=400 later:START=1,TICKS=1500 \
-	break:START=1,BREAK=1 clear:START=1,UNTIL=4
+	break:START=1,SFX=8 mushroom:START=1,FETCH=1,SFX=9,AFTER=40 big:START=1,FETCH=1,SFX=10,AFTER=200 \
+	clear:START=1,UNTIL=4
 sim: $(DATA)
 	iverilog -g2005 -I. -s plat_game_tb -o plat_game_tb.vvp plat_game_tb.v platformer.v
 	vvp -n plat_game_tb.vvp

@@ -50,8 +50,10 @@ the 25.2 MHz pixel clock.
 
 A side-scrolling platformer in the style of the 8-bit classics, with original pixel art. Hold
 **S2** to run right and press **S1** to jump (hold it for a higher jump). Bump `?` blocks for
-coins, smash bricks from below (they burst into four flying chunks), grab floating coins, stomp
-slimes, don't fall down the pits, and reach the flagpole
+coins; a few hold a mushroom that rises out of the block and slides away, and eating it makes
+Nano big (16×32), so a slime hit only shrinks Nano back instead of costing a life. Smash bricks
+from below (they burst into four flying chunks), grab floating coins, stomp slimes, don't fall
+down the pits, and reach the flagpole
 before the time runs out; the time left turns into points and the next world starts. 100
 coins give an extra life. Score, coins, world and time sit at the top; there is a title screen,
 a world card with your lives, and GAME OVER. The LEDs show your lives and a piezo buzzer
@@ -66,13 +68,16 @@ After every frame the game runs a sequence of steps, one per clock, reading the 
 at a time for collisions. It uses about a quarter of the logic and 15 block RAMs and meets
 timing at 50 MHz.
 
-The GIF above is recorded from the Verilog itself: `make gif` has the bot play in simulation
-and saves every other frame, so it is exactly what the board draws.
+The GIF above is recorded from the Verilog itself: `make gif` has the bot fetch the first
+mushroom and play on in simulation, saving every other frame, so it is exactly what the board
+draws.
 
-`make sim` has a bot play the course: it always runs and jumps at walls, pits and slimes. The
-test fails unless the bot reaches the flag, the hero never ends up inside a solid tile, never
-jumps in mid-air and never loses the ground while standing, and every smashed brick is really
-gone from the level. Then it renders the title, world
+`make sim` first has a scripted bot walk under the first mushroom block, bump it and wait for
+the mushroom, then the bot plays world 1 as big Nano and world 2 small: it always runs and
+jumps at walls, pits and slimes. The test fails unless Nano grows (keeping the feet in place),
+a slime hit on big Nano shrinks it without costing a life, both worlds are cleared, the hero
+never ends up inside a solid tile, never jumps in mid-air and never loses the ground while
+standing, and every smashed brick is really gone from the level. Then it renders the title, world
 card, gameplay and course-clear screens to PNG.
 
 ### Pong

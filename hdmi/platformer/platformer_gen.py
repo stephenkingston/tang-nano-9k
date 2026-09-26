@@ -5,7 +5,8 @@ All art is original. Writes, for $readmemh:
   plat_palette.hex  64 colours: 0-15 tiles, 16-31 sprites (16 = transparent), 32-35 logo, 36 text, 37 black
   plat_tiles.hex    64 tile slots of 16x16, 4 bits per pixel (tile palette)
   plat_slots.hex    tile id x animation frame -> tile slot (256 entries)
-  plat_sprites.hex  16 frames of 16x16, 4 bits per pixel (sprite palette, 0 = transparent)
+  plat_sprites.hex  32 frames of 16x16, 4 bits per pixel (sprite palette, 0 = transparent);
+                    big Nano is 16x32, stored as top/bottom pairs from frame 16
   plat_font.hex     64 glyphs of 8x8, one byte per row (MSB = left)
   plat_logo.hex     title logo, LOGO_H rows of 256 (LOGO_W used), 2 bits per pixel
   plat_rows.hex     text layout: per page and 8-px text row, {valid, first column, length, string offset}
@@ -323,7 +324,8 @@ T = dict(SKY=0, COIN=1, CLOUD_TL=2, CLOUD_TM=3, CLOUD_TR=4, CLOUD_BL=5, CLOUD_BM
          **{name: 8 + i for i, name in enumerate(HILLS)},
          BUSH_L=20, BUSH_M=21, BUSH_R=22, POLE=23, POLE_TOP=24, FLAG=25,
          CASTLE_BRICK=26, CASTLE_TOP=27, CASTLE_DOOR=28, CASTLE_WINDOW=29,
-         GROUND=32, BRICK=33, QBLOCK=34, USED=35, HARD=36, PIPE_TL=37, PIPE_TR=38, PIPE_L=39, PIPE_R=40)
+         GROUND=32, BRICK=33, QBLOCK=34, USED=35, HARD=36, PIPE_TL=37, PIPE_TR=38, PIPE_L=39, PIPE_R=40,
+         QBLOCK_M=41)                                     # QBLOCK_M looks like QBLOCK but holds a mushroom
 
 
 def build_tiles():
@@ -357,6 +359,8 @@ def build_tiles():
     add(T["GROUND"], [ground()])
     add(T["BRICK"], [brick()])
     add(T["QBLOCK"], [qblock(0), qblock(0), qblock(1), qblock(2)])
+    for a in range(4):
+        slot_of[(T["QBLOCK_M"], a)] = slot_of[(T["QBLOCK"], a)]
     add(T["USED"], [used_block()])
     add(T["HARD"], [hard_block()])
     add(T["PIPE_TL"], [pipe("tl")])
@@ -503,6 +507,148 @@ def debris():
     return from_art(rows, SK)
 
 
+MUSHROOM = [
+    "................",
+    ".....kkkkkk.....",
+    "...kkoowwookk...",
+    "..kooowwwwoook..",
+    ".kowwoowwoowwok.",
+    ".kowwoooooowwok.",
+    "kooooooooooooook",
+    "koowwooooooowwok",
+    "kkkooooooooookkk",
+    "..kkkkkkkkkkkk..",
+    "...kssssssssk...",
+    "...ksskssksk....",
+    "...ksskssksk....",
+    "...kssssssssk...",
+    "....kkkkkkkk....",
+    "................",
+]
+MUSHROOM = [r if len(r) == 16 else (r + "." * 16)[:16] for r in MUSHROOM]
+
+# Big Nano: the same head on a taller body, 32 rows (head 10 + body 22).
+BIG_BODIES = {
+    "stand": ["...kkkbbbbkkk...",
+              "..kbbbbbbbbbbk..",
+              ".kbbbbbybbbbbbk.",
+              ".kbbbbbbbbbbbbk.",
+              "kssbbbbbbbbbbssk",
+              "kssbbbbbybbbbssk",
+              "kssbbbbbbbbbbssk",
+              ".kkbbbbbbbbbbkk.",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..knnnnnnnnnnk..",
+              "..knnnnnnnnnnk..",
+              "..knnnnkknnnnk..",
+              "..knnnk..knnnk..",
+              "..knnnk..knnnk..",
+              "..knnnk..knnnk..",
+              "..knnnk..knnnk..",
+              "..knnnk..knnnk..",
+              ".koooook.koooook",
+              ".koooook.koooook",
+              ".kkkkkk...kkkkkk",
+              "................"],
+    "run1":  ["...kkkbbbbkkk...",
+              "..kbbbbbbbbbbkk.",
+              ".kbbbbbybbbbbbsk",
+              ".kbbbbbbbbbbbssk",
+              "kssbbbbbbbbbbkk.",
+              "kssbbbbbybbbbk..",
+              ".kkbbbbbbbbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..knnnnnnnnnnk..",
+              "..knnnnnnnnnnnk.",
+              ".knnnnkk.knnnnk.",
+              ".knnnk....knnnk.",
+              "knnnk......knnk.",
+              "knnnk......knnnk",
+              "knnk........knnk",
+              "kook........kook",
+              "koook.......kooo",
+              "kkkkk.......kkkk",
+              "................",
+              "................"],
+    "run2":  ["...kkkbbbbkkk...",
+              "..kbbbbbbbbbbk..",
+              ".kbbbbbybbbbbbk.",
+              ".kbbbbbbbbbbbbk.",
+              ".ksbbbbbbbbbbsk.",
+              ".ksbbbbbybbbbsk.",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..knnnnnnnnnnk..",
+              "..knnnnnnnnnnk..",
+              "...knnnkknnnk...",
+              "...knnnkknnnk...",
+              "...knnnkknnnk...",
+              "...knnnkknnnk...",
+              "...knnk..knnk...",
+              "...koook.koook..",
+              "...koook.koook..",
+              "...kkkkk.kkkkk..",
+              "................",
+              "................"],
+    "run3":  ["...kkkbbbbkkk...",
+              ".kkbbbbbbbbbbk..",
+              "ksbbbbbybbbbbbk.",
+              "kssbbbbbbbbbbbk.",
+              ".kkbbbbbbbbbbssk",
+              "..kbbbbbybbbbssk",
+              "..kbbbbbbbbbbkk.",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..knnnnnnnnnnk..",
+              ".knnnnnnnnnnnk..",
+              ".knnnnk.kknnnnk.",
+              ".knnnk....knnnk.",
+              ".knnk......knnnk",
+              "knnnk.......knnk",
+              "knnk........knnk",
+              "kook........kook",
+              "oook.......kooo.",
+              "kkkk.......kkkk.",
+              "................",
+              "................"],
+    "jump":  ["ks.kkkbbbbkkk.sk",
+              "ksskbbbbbbbbkssk",
+              ".kkbbbbybbbbbkk.",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..kbbbbbybbbbk..",
+              "..kbbbbbbbbbbk..",
+              "..knnnnnnnnnnk..",
+              "..knnnnnnnnnnk..",
+              ".knnnnkkknnnnk..",
+              ".knnnk...knnnnk.",
+              "knnnk.....knnnk.",
+              "knnk.......knnk.",
+              "kook........kook",
+              "koook.......kooo",
+              "kkkkk.......kkkk",
+              "................",
+              "................",
+              "................"],
+}
+
+
+def big_hero(pose):
+    rows = HERO_HEAD + BIG_BODIES[pose]
+    assert len(rows) == 32, (pose, len(rows))
+    art = from_art(rows, SK)
+    return [art[:16], art[16:]]
+
+
 def hero(pose):
     rows = HERO_HEAD + HERO_BODIES[pose]
     return from_art(rows, SK)
@@ -524,17 +670,21 @@ def coin_sprite(frame):
 
 
 SPRITE_FRAMES = ["stand", "run1", "run2", "run3", "jump", "dead", "slime1", "slime2", "slime_flat",
-                 "coin0", "coin1", "coin2", "coin3", "debris"]
+                 "coin0", "coin1", "coin2", "coin3", "debris", "mushroom"]
 
 
 def build_sprites():
     frames = [hero("stand"), hero("run1"), hero("run2"), hero("run3"), hero("jump"), from_art(HERO_DEAD, SK),
               from_art(SLIME[0], SK), from_art(SLIME[1], SK), from_art(SLIME[2], SK),
-              coin_sprite(0), coin_sprite(1), coin_sprite(2), coin_sprite(1), debris()]
-    for f in frames:
-        assert len(f) == 16 and all(len(r) == 16 for r in f), "sprite size"
+              coin_sprite(0), coin_sprite(1), coin_sprite(2), coin_sprite(1), debris(), from_art(MUSHROOM, SK)]
     while len(frames) < 16:
         frames.append(blank())
+    for pose in ("stand", "run1", "run2", "run3", "jump"):                  # frames 16..25
+        frames.extend(big_hero(pose))
+    while len(frames) < 32:
+        frames.append(blank())
+    for f in frames:
+        assert len(f) == 16 and all(len(r) == 16 for r in f), "sprite size"
     return frames
 
 
@@ -744,6 +894,8 @@ def build_level():
         for i, ch in enumerate(pattern):
             if ch == "?":
                 put(c + i, r, T["QBLOCK"])
+            elif ch == "M":
+                put(c + i, r, T["QBLOCK_M"])
             elif ch == "#":
                 put(c + i, r, T["BRICK"])
             elif ch == "o":
@@ -760,7 +912,7 @@ def build_level():
                 put(c + i, r, T["HARD"])
 
     blocks(16, 9, "?")
-    blocks(20, 9, "#?#?#")
+    blocks(20, 9, "#M#?#")
     blocks(22, 5, "?")
     pipe_at(28, 2)
     pipe_at(38, 3)
@@ -769,13 +921,13 @@ def build_level():
     pipe_at(57, 4)
     blocks(62, 9, "#?#")
     blocks(64, 5, "ooooo")
-    blocks(77, 9, "#?#")
+    blocks(77, 9, "#M#")
     blocks(80, 5, "########")
     blocks(91, 5, "###?")
     blocks(94, 9, "#")
     blocks(100, 9, "##")
     blocks(106, 9, "?  ?  ?")
-    blocks(109, 5, "?")
+    blocks(109, 5, "M")
     blocks(118, 9, "#")
     blocks(121, 5, "###")
     blocks(128, 5, "#??#")
@@ -888,7 +1040,7 @@ def main():
     for i, t in enumerate(tiles):
         sheet.paste(tile_img(t, TILE_PAL), ((i % 16) * 18, (i // 16) * 18))
     for i, f in enumerate(sprites):
-        sheet.paste(tile_img(f, [(0x6B, 0x8C, 0xFF)] + SPRITE_PAL[1:]), ((i % 16) * 18, 4 * 18 + (i // 16) * 18))
+        sheet.paste(tile_img(f, [(0x6B, 0x8C, 0xFF)] + SPRITE_PAL[1:]), ((i % 16) * 18, 4 * 18 + (i // 16) * 16))
     lg = Image.new("RGB", (LOGO_W, LOGO_H))
     lg.putdata([(0x6B, 0x8C, 0xFF) if p == 0 else LOGO_PAL[p - 1] if p < 4 else (0, 0, 0) for row in logo for p in row])
     big = Image.new("RGB", (max(sheet.width, LOGO_W), sheet.height + LOGO_H + 4), (40, 40, 40))

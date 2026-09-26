@@ -12,15 +12,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image
 
-# (first tick, last tick) of each part; every 2nd tick becomes a frame (30 fps).
-# Title screen, world card, the first 14 seconds of play (up to a brick being smashed),
-# and the finish at the flag.
-SEGMENTS = [(4, 63), (150, 180)] + [(t, t + 59) for t in range(182, 1022, 60)] + \
-           [(t, t + 59) for t in range(1602, 2202, 60)]
+# The bot fetches the first mushroom, then plays on. Parts of the run as (first tick, last
+# tick), every 2nd tick becoming a frame (30 fps): title screen, world card, the walk to the
+# mushroom block and the mushroom rising, the mushroom coming back and Nano growing, big Nano
+# on the run, the finish at the flag, and a brick smashed in world 2.
+PARTS = [(4, 63), (150, 181), (182, 421), (500, 1099), (1950, 2279), (3330, 3391)]
+SEGMENTS = [(t, min(t + 59, t1)) for t0, t1 in PARTS for t in range(t0, t1 + 1, 60)]
 
 
 def run_job(job, t0, t1):
-    subprocess.run(["vvp", "-n", "plat_gif_tb.vvp", f"+T0={t0}", f"+T1={t1}", "+STEP=2", f"+JOB={job}"],
+    subprocess.run(["vvp", "-n", "plat_gif_tb.vvp", f"+T0={t0}", f"+T1={t1}", "+STEP=2", f"+JOB={job}", "+FETCH"],
                    check=True, stdout=subprocess.DEVNULL)
     return job
 

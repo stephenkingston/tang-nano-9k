@@ -11,3 +11,4 @@ hdmi/*/*.hex
 hdmi/*/*.png
 hdmi/*/scene_params.vh
 hdmi/*/pong_pal.vh
+hdmi/*/plat_params.vh

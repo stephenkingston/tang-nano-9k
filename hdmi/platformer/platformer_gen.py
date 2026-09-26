@@ -53,8 +53,8 @@ SPRITE_PAL = [
     (0xF8, 0xB8, 0x10),  # 11 coin
     (0xA0, 0x60, 0x00),  # 12 coin dark
     (0xFF, 0xF4, 0xB0),  # 13 coin shine
-    (0x20, 0xB0, 0x40),  # 14 green (flag emblem)
-    (0x90, 0x98, 0xB0),  # 15 grey
+    (0xC8, 0x4C, 0x0C),  # 14 brick (debris)
+    (0x6E, 0x22, 0x08),  # 15 brick dark (debris)
 ]
 LOGO_PAL = [(0xC8, 0x4C, 0x0C), (0xFC, 0xE8, 0xC8), (0x30, 0x10, 0x04), (0x00, 0x00, 0x00)]
 TEXT_WHITE, BLACK = (0xFF, 0xFF, 0xFF), (0x00, 0x00, 0x00)
@@ -485,6 +485,24 @@ SLIME = [
 ]
 
 
+# A chunk of broken brick: 8x8 in the top-left corner of a 16x16 frame.
+DEBRIS = [
+    ".hhhhhz.",
+    "heeeeeez",
+    "heeeeeez",
+    "zzzzzzzz",
+    "eeezheee",
+    "eeezheee",
+    "eeezheez",
+    ".zzzzzz.",
+]
+
+
+def debris():
+    rows = [r + "." * 8 for r in DEBRIS] + ["." * 16] * 8
+    return from_art(rows, SK)
+
+
 def hero(pose):
     rows = HERO_HEAD + HERO_BODIES[pose]
     return from_art(rows, SK)
@@ -506,13 +524,13 @@ def coin_sprite(frame):
 
 
 SPRITE_FRAMES = ["stand", "run1", "run2", "run3", "jump", "dead", "slime1", "slime2", "slime_flat",
-                 "coin0", "coin1", "coin2", "coin3"]
+                 "coin0", "coin1", "coin2", "coin3", "debris"]
 
 
 def build_sprites():
     frames = [hero("stand"), hero("run1"), hero("run2"), hero("run3"), hero("jump"), from_art(HERO_DEAD, SK),
               from_art(SLIME[0], SK), from_art(SLIME[1], SK), from_art(SLIME[2], SK),
-              coin_sprite(0), coin_sprite(1), coin_sprite(2), coin_sprite(1)]
+              coin_sprite(0), coin_sprite(1), coin_sprite(2), coin_sprite(1), debris()]
     for f in frames:
         assert len(f) == 16 and all(len(r) == 16 for r in f), "sprite size"
     while len(frames) < 16:

@@ -13,8 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
 # (first tick, last tick) of each part; every 2nd tick becomes a frame (30 fps).
-# Title screen, world card, the first 12 seconds of play, and the finish at the flag.
-SEGMENTS = [(4, 63), (150, 180)] + [(t, t + 59) for t in range(182, 902, 60)] + \
+# Title screen, world card, the first 14 seconds of play (up to a brick being smashed),
+# and the finish at the flag.
+SEGMENTS = [(4, 63), (150, 180)] + [(t, t + 59) for t in range(182, 1022, 60)] + \
            [(t, t + 59) for t in range(1602, 2202, 60)]
 
 

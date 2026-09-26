@@ -10,10 +10,11 @@ module plat_game_tb;
     wire [11:0]  mb_addr, cam_x, hero_x, timer;
     wire [5:0]   mb_wd, mb_rd, ma_rd;
     wire         mb_we, reload, hero_vis;
-    wire [2:0]   mode, sfx;
+    wire [2:0]   mode;
+    wire [3:0]   sfx;
     wire signed [9:0] hero_y;
     wire [3:0]   hero_f, lives, world;
-    wire [107:0] foes;
+    wire [107:0] foes, debris;
     wire [26:0]  pop;
     wire [23:0]  score;
     wire [7:0]   coins, frames;
@@ -24,26 +25,36 @@ module plat_game_tb;
         .clk(clk), .tick(tick), .btn_jump(jump), .btn_run(run),
         .map_addr(mb_addr), .map_we(mb_we), .map_wd(mb_wd), .map_rd(mb_rd), .map_reload(reload),
         .mode(mode), .cam_x(cam_x), .hero_x(hero_x), .hero_y(hero_y), .hero_f(hero_f), .hero_vis(hero_vis),
-        .foes(foes), .pop(pop), .score(score), .coins(coins), .timer(timer), .lives(lives), .world(world),
-        .frames(frames), .sfx(sfx)
+        .foes(foes), .pop(pop), .debris(debris), .score(score), .coins(coins), .timer(timer), .lives(lives),
+        .world(world), .frames(frames), .sfx(sfx)
     );
 
     `include "plat_bot.vh"
 
     localparam [2:0] M_TITLE = 0, M_CARD = 1, M_PLAY = 2, M_DYING = 3, M_CLEAR = 4, M_GAMEOVER = 5, M_TIMEUP = 6;
 
-    integer n_coin = 0, n_stomp = 0, n_jump = 0, n_bump = 0, n_die = 0, n_clear = 0, n_1up = 0;
+    integer n_coin = 0, n_stomp = 0, n_jump = 0, n_bump = 0, n_die = 0, n_clear = 0, n_1up = 0, n_break = 0;
     always @(posedge clk) begin
         case (sfx)
-            3'd1: n_jump  = n_jump + 1;
-            3'd2: n_coin  = n_coin + 1;
-            3'd3: n_stomp = n_stomp + 1;
-            3'd4: n_bump  = n_bump + 1;
-            3'd5: n_die   = n_die + 1;
-            3'd6: n_clear = n_clear + 1;
-            3'd7: n_1up   = n_1up + 1;
+            4'd1: n_jump  = n_jump + 1;
+            4'd2: n_coin  = n_coin + 1;
+            4'd3: n_stomp = n_stomp + 1;
+            4'd4: n_bump  = n_bump + 1;
+            4'd5: n_die   = n_die + 1;
+            4'd6: n_clear = n_clear + 1;
+            4'd7: n_1up   = n_1up + 1;
+            4'd8: n_break = n_break + 1;
         endcase
     end
+
+    // A broken brick must be gone from the level: note where each one was.
+    reg [11:0] brk_addr = 0;
+    reg        brk_pending = 0;
+    always @(posedge clk)
+        if (sfx == 4'd8) begin
+            brk_addr    <= mb_addr;
+            brk_pending <= 1'b1;
+        end
 
     task frame_step;
         begin
@@ -82,6 +93,13 @@ module plat_game_tb;
             if (mode == M_PLAY && grounded_before && !game.on_ground && n_jump == jumps_before && game.vy >= 0 &&
                 bot_solid((game.px[15:4] + 1) >> 4, (($signed(game.py) >>> 4) + 16) >> 4))
                 flicker = flicker + 1;                       // "in the air" while standing on something
+            if (brk_pending) begin
+                if (level.ram[brk_addr] != 0) begin
+                    errors = errors + 1;
+                    $display("ERROR: brick at column %0d row %0d not removed", brk_addr[7:0], brk_addr[11:8]);
+                end
+                brk_pending = 1'b0;
+            end
             if (n_jump != jumps_before && !grounded_before) begin
                 errors = errors + 1;
                 if (errors < 10) $display("ERROR: jumped in mid-air at frame %0d", n);
@@ -116,8 +134,8 @@ module plat_game_tb;
         end
         $display("after %0d frames: mode=%0d world=%0d lives=%0d furthest x=%0d highest y=%0d score=%h coins=%h",
                  n, mode, world, lives, max_x, min_y, score, coins);
-        $display("events: %0d jumps, %0d coins, %0d stomps, %0d bumps, %0d deaths, %0d clears, %0d extra lives",
-                 n_jump, n_coin, n_stomp, n_bump, n_die, n_clear, n_1up);
+        $display("events: %0d jumps, %0d coins, %0d bricks broken, %0d stomps, %0d bumps, %0d deaths, %0d clears, %0d extra lives",
+                 n_jump, n_coin, n_break, n_stomp, n_bump, n_die, n_clear, n_1up);
         if (n_clear == 0) begin errors = errors + 1; $display("ERROR: the bot never reached the flag"); end
         if (flicker != 0) begin errors = errors + 1; $display("ERROR: standing hero lost the ground %0d times", flicker); end
         if (errors == 0) $display("PASS");

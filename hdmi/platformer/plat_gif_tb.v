@@ -16,10 +16,11 @@ module plat_gif_tb;
     wire [11:0]  ma_addr, mb_addr, cam_x, hero_x, timer;
     wire [5:0]   mb_wd, mb_rd, ma_rd;
     wire         mb_we, reload, hero_vis;
-    wire [2:0]   mode, sfx;
+    wire [2:0]   mode;
+    wire [3:0]   sfx;
     wire signed [9:0] hero_y;
     wire [3:0]   hero_f, lives, world;
-    wire [107:0] foes;
+    wire [107:0] foes, debris;
     wire [26:0]  pop;
     wire [23:0]  score, rgb;
     wire [7:0]   coins, frames;
@@ -30,13 +31,13 @@ module plat_gif_tb;
         .clk(clk), .tick(tick), .btn_jump(jump), .btn_run(run),
         .map_addr(mb_addr), .map_we(mb_we), .map_wd(mb_wd), .map_rd(mb_rd), .map_reload(reload),
         .mode(mode), .cam_x(cam_x), .hero_x(hero_x), .hero_y(hero_y), .hero_f(hero_f), .hero_vis(hero_vis),
-        .foes(foes), .pop(pop), .score(score), .coins(coins), .timer(timer), .lives(lives), .world(world),
-        .frames(frames), .sfx(sfx)
+        .foes(foes), .pop(pop), .debris(debris), .score(score), .coins(coins), .timer(timer), .lives(lives),
+        .world(world), .frames(frames), .sfx(sfx)
     );
     plat_render render (
         .clk(clk), .x(x), .y(y), .mode(mode), .cam_x(cam_x),
         .hero_x(hero_x), .hero_y(hero_y), .hero_f(hero_f), .hero_vis(hero_vis), .foes(foes), .pop(pop),
-        .score(score), .coins(coins), .timer(timer), .lives(lives), .world(world), .frames(frames),
+        .debris(debris), .score(score), .coins(coins), .timer(timer), .lives(lives), .world(world), .frames(frames),
         .map_addr(ma_addr), .map_rd(ma_rd), .rgb(rgb)
     );
 

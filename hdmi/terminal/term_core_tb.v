@@ -48,8 +48,7 @@ module term_core_tb;
         .tx_busy(tx_busy), .tx_start(tx_start), .tx_data(tx_data)
     );
     term_bars bars (
-        .clk(clk), .ok(idle), .ln(ln_bcd), .col(col_bcd), .rx_bcd(28'h0012345), .uptime(24'h015907), .spark(32'h86420135),
-        .baud_bcd(28'h0460800),
+        .clk(clk), .ok(idle), .ln(ln_bcd), .col(col_bcd), .baud_bcd(28'h0460800),
         .active(1'b1), .theme(2'd2), .title_custom(title_custom),
         .w_en(b_we), .w_addr(b_waddr), .w_data(b_wdata)
     );

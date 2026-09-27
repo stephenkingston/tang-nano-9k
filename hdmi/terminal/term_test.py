@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 
+import term_aes as ta
 import term_font as tf
 import term_gen
 import term_model as tm
@@ -43,19 +44,44 @@ def boot_term():
 
 
 def compile_sim():
-    subprocess.run(['iverilog', '-g2005', '-I.', '-s', 'term_core_tb', '-o', SIM, 'term_core_tb.v', 'terminal.v'],
-                   check=True)
+    subprocess.run(['iverilog', '-g2005', '-I.', '-s', 'term_core_tb', '-o', SIM, 'term_core_tb.v', 'terminal.v',
+                    'term_aes.v'], check=True)
     subprocess.run(['iverilog', '-g2005', '-I.', '-s', 'term_frame_tb', '-o', 'tb_frame.vvp', 'term_frame_tb.v',
-                    'terminal.v'], check=True)
+                    'terminal.v', 'term_aes.v'], check=True)
 
 
 def uart_tests():
     subprocess.run(['iverilog', '-g2005', '-I.', '-s', 'term_uart_tb', '-o', 'tb_uart.vvp', 'term_uart_tb.v',
-                    'terminal.v'], check=True)
+                    'terminal.v', 'term_aes.v'], check=True)
     out = subprocess.run(['vvp', '-n', 'tb_uart.vvp'], capture_output=True, text=True).stdout
     lines = [l for l in out.splitlines() if l.startswith(('ok', 'FAIL'))]
     print('\n'.join(lines) if lines else 'FAIL uart: no result')
     return bool(lines) and not any(l.startswith('FAIL') for l in lines) and 'transmit' in lines[-1]
+
+
+def aes_tests():
+    """term_aes on its own: the power-up key and IV, the FIPS-197 and SP 800-38A vectors, and
+    random keys, IVs and texts up to the most blocks the shell can send."""
+    rng = random.Random(3)
+    rand = lambda n: bytes(rng.randrange(256) for _ in range(n))
+    cases = [(0x81, ta.SP_KEY, ta.SP_IV, ta.SP_PT), (0x01, ta.FIPS_KEY, bytes(16), ta.FIPS_PT),
+             (0x01, ta.SP_KEY, ta.SP_IV, ta.SP_PT)]
+    cases += [(0x01, rand(16), rand(16), rand(16 * n)) for n in (1, 2, 3, 5, 8, 13, 112)]
+    cases += [(0x81, ta.SP_KEY, ta.SP_IV, rand(16 * 7))]                   # the last key and IV again
+    data, key, iv = [], None, None
+    for flags, k, v, pt in cases:
+        if not flags & 0x80:
+            key, iv = k, v
+        data += [flags, len(pt) // 16] + list(k) + list(v) + list(pt) + list(ta.cbc_encrypt(key or ta.SP_KEY,
+                                                                                         iv or ta.SP_IV, pt))
+    with open('tb_aes.hex', 'w') as f:
+        f.write('\n'.join(f'{b:02x}' for b in data + [0]) + '\n')
+    subprocess.run(['iverilog', '-g2005', '-I.', '-s', 'term_aes_tb', '-o', 'tb_aes.vvp', 'term_aes_tb.v',
+                    'term_aes.v'], check=True)
+    out = subprocess.run(['vvp', '-n', 'tb_aes.vvp'], capture_output=True, text=True).stdout
+    lines = [l for l in out.splitlines() if l.startswith(('ok', 'FAIL'))]
+    print('\n'.join(lines) if lines else 'FAIL aes: no result')
+    return bool(lines) and all(l.startswith('ok') for l in lines)
 
 
 def frame_test(name, state, **settings):
@@ -102,8 +128,7 @@ def run_sim(data, gaps=False):
 
 def expected(term):
     templates = tm.bar_templates()
-    st = {'cx': term.cx, 'cy': term.cy, 'rx': 12345, 'hours': 1, 'minutes': 59, 'seconds': 7, 'baud': 460800,
-          'spark': [(0x86420135 >> 4 * i) & 15 for i in range(8)], 'active': True, 'theme': 2,
+    st = {'cx': term.cx, 'cy': term.cy, 'baud': 460800, 'active': True, 'theme': 2,
           'title_custom': term.title_custom, 'title': term.title}
     state = {'cx': term.cx, 'cy': term.cy, 'wrap': int(term.wrap), 'bank': term.bank, 'tcem': int(term.tcem),
              'cur_style': term.cur_style, 'cur_blink': int(term.cur_blink), 'scnm': int(term.scnm),
@@ -218,18 +243,28 @@ def features(split=False):
 
 
 def shell_session():
-    """Typing at the built-in shell: sums, rubbing out, keys it ignores, leaving and coming back."""
+    """Typing at the built-in shell: commands, AES with its errors, long lines that wrap and
+    scroll, rubbing out, keys it ignores, leaving and coming back."""
     E = '\x1b'
-    keys = ['5 + 5\r', '12-20\r', '\r', '-7 + 3 - 1\r\n', 'abc\r', '5 +\r', '4 4\r', '2147483647+1\r',
-            '99\x7f7\r', '\x08\x08\x08\x08x\r', '1+2+3+4+5+6+7+8+9+10\r', '4294967295 + 2\r', '0\r',
-            '-0\r', '+5\r', '- - 5\r', '12\x08\x083\r', f'8{E}[D{E}[C{E}[A{E}[B{E}[3~{E}[2~+1\r',
-            'x' * 90 + '\r', '7$+$3\r', '5 + 5\n', '6 + 6\n\n', '0012 - 012\r', '1000000000+2000000000\r',
-            '\t3\t+\t4\r', 'é+1\r', '9' * 12 + '\r', f'{E}[31mnow a program is talking\r\n', 'plain 1+1\r\n',
-            f'{E}[?2112h', '1+1\r', f'{E}c', '2+2\r', f'{E}[?2112h', '3+3\r', f'{E}[?2112l', '4+4\r',
-            f'{E}[?25;2112h', '\r' * 30, 'q' * 200 + '\r', '40 + 2\r',
+    k2, iv2 = bytes(range(16)), bytes(range(16, 32))
+    ct = lambda text, key=ta.SP_KEY, iv=ta.SP_IV: ta.cbc_encrypt(key, iv, ta.pad(text)).hex()
+    fox = b'the quick brown fox jumps over the lazy dog. ' * 4
+    keys = ['enc hello\r', f'dec {ct(b"hello")}\r', f'dec {ct(b"hello").upper()}\r', 'enc\r', 'enc \r',
+            f'dec {ct(b"")}\r', 'enc  two  spaces  \r', f'key {k2.hex()}\r',
+            'iv ' + ' '.join(iv2.hex()[i:i + 8] for i in range(0, 32, 8)) + '\r', 'enc attack at dawn\r',
+            f'dec {ct(b"attack at dawn", k2, iv2)}\r', f'dec {ct(b"attack at dawn")}\r',
+            f'dec {ct(bytes(range(40)), k2, iv2)}\r', 'key 0011\r', 'key ' + 'x' * 32 + '\r',
+            'iv ' + '0' * 31 + '\r', 'iv ' + '0' * 34 + '\r', 'dec 0123\r', 'dec ' + '0' * 31 + '\r',
+            'dec zz\r', 'dec\r', 'enc ' + fox.decode() + '\r', f'dec {ct(fox, k2, iv2)}\r',
+            'enc caf\u00e9 \u2500\u2588\r', 'ENC x\r', 'encx\r', 'enc\tx\r', 'e\tnc x\r',
+            'enc abc\x7f\x7fx\r', '\x08\x08\x08x\r', '\r' * 30, 'enc ' + 'z' * 1800 + '\r',
+            'enc ' + 'y' * 1700 + '\r', f'dec {ct(bytes(range(256)) * 3, k2, iv2)}\r',
             'help\r', '  help  \r', 'help me\r', 'hel\r', 'helpp\r', 'HELP\r', 'theme\r', 'crt\r', 'crt\r',
-            'clearx\r', 'the me\r', 'theme\x08\x08\x08\x08\x08crt\r', 'hello\r', '12 + 30 - 5\r', 'clear\r',
-            '7-8\r', f'help{E}[D\r', 'clear  \r', 'help\r', 'help\r', 'help\r', 'help\r']
+            'clearx\r', 'the me\r', 'theme\x08\x08\x08\x08\x08crt\r', 'hello\r', 'clear\r',
+            f'enc a{E}[D\r', 'clear  \r', f'8{E}[D{E}[C{E}[A{E}[B{E}[3~{E}[2~\r', 'x' * 90 + '\r',
+            'enc \n', 'key 00\n\n', f'{E}[31mnow a program is talking\r\n', 'enc plain\r\n',
+            f'{E}[?2112h', 'enc back\r', f'{E}c', 'enc reset\r', f'{E}[?2112h', 'iv 00\r',
+            f'{E}[?2112l', 'enc off\r', f'{E}[?25;2112h', 'help\r', 'help\r', 'enc done\r']
     return ''.join(keys).encode()
 
 
@@ -314,6 +349,8 @@ def main():
         ok &= good
         if not good and not args.keep:
             break
+    if ok:
+        ok &= aes_tests()
     if ok:
         ok &= uart_tests()
     if ok:

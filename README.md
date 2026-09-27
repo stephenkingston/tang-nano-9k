@@ -21,7 +21,7 @@ game's real tiles, sprites and level.
 | `hdmi/sunset/` | A parallax pixel-art sunset over a lake |
 | `hdmi/pong-classic/` | Pong against the computer on a monochrome arcade CRT |
 | `hdmi/platformer/` | NANO QUEST: run, jump, stomp slimes, collect coins and reach the flag |
-| `hdmi/terminal/` | NANO TERM: a terminal on the USB serial port, with UTF-8, 256 colours and xterm escape sequences |
+| `hdmi/terminal/` | NANO TERM: a terminal on the USB serial port, with UTF-8, 256 colours, xterm escape sequences, and a built-in shell that does AES-128 in hardware |
 | `hdmi/common/` | Shared HDMI output, DSP multiplier wrapper, pin constraints and build rules |
 | `docs/` | The explainer page (GitHub Pages); `page_data.py` copies the game's data into it |
 
@@ -97,16 +97,19 @@ ncurses programs use, so vim, less, man, nano and top run on it (`TERM=xterm-256
 starts as a tiny shell of its own, so you can also just type at it:
 
 ```
-$ 5 + 5
-10
-$ 1200 - 2025
--825
+$ enc attack at dawn
+89fc2ea14333a74c6319ab8d763d2829
+$ dec 89fc2ea14333a74c6319ab8d763d2829
+attack at dawn
 $ help
   help            this list
   clear           clear the screen
   theme           the next colour theme: colour, green or amber
   crt             CRT scanlines on or off
-  12 + 30 - 5     add and subtract whole numbers
+  key <hex>       set the AES-128 key: 32 hex digits
+  iv <hex>        set the CBC initial vector: 32 hex digits
+  enc <text>      encrypt the text (AES-128-CBC, PKCS#7 padding), in hex
+  dec <hex>       decrypt that hex back to text
   ...
 ```
 
@@ -128,16 +131,15 @@ minicom -D /dev/ttyUSB1                     # type at its built-in shell, at any
   box drawing, block elements, arrows, shapes, check marks and powerline separators. Braille
   (2×4 dots a cell, for graphs) is drawn straight from the dot pattern. Double-width characters
   such as CJK and emoji take two cells as a placeholder, so programs' layouts stay right.
-- **Colour and attributes:** 256 colours (24-bit colour is rounded to them), bold (as bright
+- **Colour and attributes:** 256 colours (24-bit colour is rounded to the 6×6×6 cube), bold (as bright
   colours), dim, italic (slanted), underline, blink, strike-through and reverse.
 - **Escape sequences:** cursor movement, erasing, scroll regions, inserting and deleting
   characters and lines, insert mode, repeat, tabs, the DEC line-drawing set, the alternate screen,
   saved cursors, cursor shapes, reverse screen and window titles (shown in the title bar). It
   answers cursor-position and device-attribute queries on the serial port's other direction.
 - **Any serial speed:** 9600 to 3000000 baud, found from the line itself (see below).
-- **Bars:** the title bar shows the window title and a sparkline of bytes received per second;
-  the status bar shows the serial speed, the cursor position, bytes received, uptime and the
-  colour theme.
+- **Bars:** the title bar shows the window title and a light for received data; the status bar
+  shows the serial speed, the cursor position and the colour theme.
 - **Built-in shell:** a `$ ` prompt for typing at the terminal directly (see below).
 - **Buttons:** S1 cycles the colour theme (colour, green phosphor, amber phosphor), and held for
   half a second brings the built-in shell back; S2 toggles CRT scanlines. LEDs: receiving,
@@ -148,8 +150,9 @@ minicom -D /dev/ttyUSB1                     # type at its built-in shell, at any
 
 Bytes go from the UART into a 2 KB FIFO, and the terminal engine, a state machine, parses them
 and edits a screen memory of 62 rows × 80 cells: the main screen, the alternate screen and the
-two bars, with each cell's glyph, colours and attributes in 32 bits. Scrolling rotates a table
-of rows instead of moving text, so it costs 80 clocks (blanking the new row) whatever the scroll
+two bars, with each cell's glyph, colours and attributes in 32 bits. The engine takes a step
+every other clock (see below for why) and writes one cell a step. Scrolling rotates a table of
+rows instead of moving text, so it costs 80 steps (blanking the new row) whatever the scroll
 region. The renderer reads each cell once per 9 pixels (the engine has the read port the rest
 of the time), looks up the font and the palette, and adds the effects six clocks behind the
 beam; there is no frame buffer. `nanoterm.py shell` runs your shell in an 80×28 pseudo-terminal,
@@ -166,22 +169,59 @@ posing as an FTDI chip, which only switches to a new baud rate the next time the
 
 At power-up the terminal is a tiny shell for typing at it directly, since normally a terminal's
 keys go to a computer that decides what to show. It shows a `$ ` prompt; Backspace (BS or DEL)
-rubs out, and Enter reads the line back from the screen and runs it: `help`, `clear`, `theme`
-and `crt`, or a sum of 32-bit integers such as `5 + 5` or `7 - 12 + 100`, whose value is printed
-on the next line. Arrow and editing keys are ignored. What the shell prints comes from a small
-text ROM and goes through the terminal like received text, so the help can use colours. Any other escape sequence means a
-program is driving the terminal, and the shell steps aside until `CSI ? 2112 h` (which
+rubs out, and Enter reads the line back from the screen, from the prompt over every row it
+wrapped onto, and runs it: `help`, `clear`, `theme`, `crt`, or one of the AES commands below.
+Arrow and editing keys are ignored. What the shell prints comes from a small text ROM and goes
+through the terminal like received text, so the help can use colours. Any other escape sequence
+means a program is driving the terminal, and the shell steps aside until `CSI ? 2112 h` (which
 `nanoterm.py` sends when it finishes) or S1 held down brings it back.
 
-It uses 59% of the LUTs (plus 28% as adders) and 22 of the 26 block RAMs, and meets timing at
-44 MHz against the 27 MHz pixel clock. That is a fairly full chip, so it is synthesised without
-the wide-LUT muxes (`-nowidelut`, which saves about 800 LUTs here) and built with placer seed 2;
-if a build cannot place the design, or trips the clock-route check, try another `SEED=n`. Check a
-new build on the board with `make check` too: one earlier build met timing and passed every
-simulation, yet scrolled wrongly on the board, differently on each load; eight builds with other
-seeds all passed. On the board it keeps up with 2 Mbaud indefinitely (a
-483 KB stream arrives in 3.05 s with the screen exactly matching the model), and `make check`
-passes at speeds from 9600 to 3 Mbaud in turn without a reload.
+The shell also does AES-128 in CBC mode with PKCS#7 padding, in hardware. `key` and `iv` take 32
+hex digits (spaces allowed), `enc` encrypts the rest of its line and prints the ciphertext in
+hex, and `dec` takes the hex back (it can wrap over several rows) and prints the text, or says
+the padding is wrong, which is what a wrong key or IV usually gives. The key and IV start as
+the example ones in NIST SP 800-38A, so the board agrees with OpenSSL straight away:
+
+```sh
+printf 'attack at dawn' | openssl enc -aes-128-cbc -K 2b7e151628aed2a6abf7158809cf4f3c \
+    -iv 000102030405060708090a0b0c0d0e0f | xxd -p    # 89fc2ea14333a74c6319ab8d763d2829
+```
+
+The AES unit (`term_aes.v`) works a byte at a time, which keeps it to about 400 logic cells: the
+S-box and its inverse are a ROM in one block RAM, and a second block RAM holds the round keys
+(worked out once when the key is set), the IV, the state and the text. Each round gathers a
+column's four bytes (ShiftRows and SubBytes on the way in), then writes them back through
+MixColumns and the round key one byte at a time. Decryption runs the inverse round and goes
+through the blocks last first, so it can work in place and each block's predecessor is still
+ciphertext when it is needed. A block takes 866 clocks, about 0.5 MB/s. It is a demonstration,
+not a way to protect secrets: the key is typed in plain view, and nothing guards against
+timing or power analysis.
+
+It uses 62% of the LUTs (plus 26% as adders) and 24 of the 26 block RAMs. That is a fairly full
+chip. It is synthesised without the wide-LUT muxes (`-nowidelut`, which saves about 800 LUTs
+here), and its LUT mapping leaves out a step of ABC9 that fails on this design
+(`term_abc9.abc`). To make room for AES, the sums the shell used to do, the status bar's byte
+counter, uptime and sparkline, and the grey ramp for 24-bit colour were taken out.
+
+Two things about the real chip shaped the engine, and neither shows up in the tools:
+
+- **Real delays are longer than nextpnr says.** Builds that nextpnr said met timing at around
+  40 MHz misbehaved at 27 MHz, in ways that depended on placement: a scroll scrambled rows, or a
+  line feed didn't move the cursor. The very same placement and routing worked with the clock
+  slowed to 18 MHz. So the engine takes a step every other clock, and its logic has two clocks
+  to settle.
+- **A block RAM's read output doesn't hold still while its clock enable is low**, as the
+  simulation models assume. So the engine keeps what it reads in registers.
+
+Before those two changes, 2 of 11 builds worked on the board; after them, all 10 did. It is built
+with placer seed 1, which nextpnr reports at 41 MHz against the 27 MHz pixel clock. If a build
+can't place the design, or trips the clock-route check, try another `SEED=n`. Either way, check a
+new build on the board with `make check`, because the tools can't vouch for it.
+
+On the board, ordinary output keeps up at 3 Mbaud: 677 KB of text arrives in 2.94 s with the
+screen exactly matching the model. A 483 KB stress stream made almost entirely of escape
+sequences keeps up at 1 Mbaud. `make check` passes at speeds from 9600 to 3 Mbaud in turn without
+a reload.
 
 ### Pong
 
@@ -259,14 +299,17 @@ with a message; rebuild with another `SEED=n` if it happens.
   and games finish, then renders attract, in-game, game-over and green-phosphor frames to PNG.
 - `platformer/`, `make sim`: the bot playthrough described above, plus screens rendered to PNG.
 - `terminal/`, `make sim`: the terminal engine against the Python model (`term_model.py`) on
-  every supported control and escape sequence, a session at the built-in shell, random streams
+  every supported control and escape sequence, a session at the built-in shell (every command,
+  AES with its error cases, and lines long enough to wrap, scroll and overflow), random streams
   of text, UTF-8 (valid and broken) and escape sequences, and any recorded sessions given to
   `term_test.py`. The screen, cursor, modes, both bars and every reply must match exactly,
   including screen checksums along the way. Then the serial port at the bit level: a sender
   changes speed (9600 to 3 Mbaud, some with its clock 2.5% off, and single keystrokes) and every
   byte must arrive intact, including those sent while the speed is measured. Then four frames
   rendered by the Verilog and compared pixel for pixel with the model's renderer (all three
-  themes and the scanlines). Recorded sessions of vim, less, man, nano, top and bash also
+  themes and the scanlines). The AES unit is also tested on its own against the FIPS-197 and
+  NIST SP 800-38A vectors, the power-up key and IV, and random keys, IVs and texts up to the
+  most blocks the shell can send. Recorded sessions of vim, less, man, nano, top and bash also
   matched, and the model agreed with pyte, an independent terminal emulator, on those sessions.
   With the board loaded, `make check` streams the same tests to it at full speed. After each
   part the FPGA sends back every cell on its screen (`CSI 998 n`) and the checksum, and both must

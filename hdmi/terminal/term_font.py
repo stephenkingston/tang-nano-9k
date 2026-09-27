@@ -615,15 +615,8 @@ PALETTE = BASE16 + [(CUBE[i // 36], CUBE[i // 6 % 6], CUBE[i % 6]) for i in rang
 
 
 def rgb256(r, g, b):
-    """Truecolour -> nearest-ish xterm-256 index, exactly as terminal.v does it."""
-    if max(r, g, b) - min(r, g, b) < 16:
-        v = (r + 2 * g + b) >> 2
-        if v < 8:
-            return 16
-        if v > 238:
-            return 231
-        return 232 + (((v - 3) * 13) >> 7)
-
+    """Truecolour -> the nearest colour of xterm-256's 6x6x6 cube, exactly as terminal.v does it
+    (greys too: the 24-step grey ramp is left out to save logic)."""
     def q(c):
         return 0 if c < 48 else 1 if c < 115 else 2 if c < 155 else 3 if c < 195 else 4 if c < 235 else 5
     return 16 + 36 * q(r) + 6 * q(g) + q(b)

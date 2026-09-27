@@ -9,6 +9,7 @@ file to a PNG preview with:
 """
 import sys
 
+import term_aes
 import term_font as tf
 
 COLS, ROWS = 80, 28                 # the terminal area; the screen has a title and a status bar too
@@ -44,6 +45,7 @@ class Term:
         self.saying = False
         self.pending = b''
         self.switches = []              # theme and crt commands, which the display carries out
+        self.aes_key, self.aes_iv = term_aes.SP_KEY, term_aes.SP_IV     # the AES unit's, from power-up
         self.reset()
 
     # ---------------------------------------------------------------- state
@@ -123,6 +125,8 @@ class Term:
     def index(self):
         if self.cy == self.bot:
             self.scroll_up(self.top, self.bot, 1)
+            if self.local and not self.saying and self.prow > 0:
+                self.prow -= 1                          # the line being typed at the shell moves up
         elif self.cy < ROWS - 1:
             self.cy += 1
 
@@ -210,9 +214,9 @@ class Term:
     # ---------------------------------------------------------------- the built-in shell
     # At power-up the terminal is a tiny shell for typing at it directly (from minicom, say):
     # a "$ " prompt, Backspace (BS or DEL) rubs out, and Enter runs the line: one of COMMANDS,
-    # or a sum like 5 + 5 or 7 - 12 (32-bit integers), whose value is printed on the next line.
-    # Arrow and editing keys are ignored. Any other escape sequence means a program is driving
-    # the terminal, and the shell steps aside until CSI ? 2112 h (or S1 held down) brings it back.
+    # some with an argument (see run_line). Arrow and editing keys are ignored. Any other escape
+    # sequence means a program is driving the terminal, and the shell steps aside until
+    # CSI ? 2112 h (or S1 held down) brings it back.
     def local_key(self, b, was_cr):
         """A key typed at the shell: True if the shell dealt with it."""
         if b in (0x08, 0x7F):
@@ -220,21 +224,73 @@ class Term:
                 self.rubout()
             return True
         if b == 0x0D or (b == 0x0A and not was_cr):
-            row = self.scr[self.cy]
-            word, v = command(row), evaluate(row)
-            if word in ('help', 'clear'):
-                self.pending += SAY[word] + b'$ '
-            elif word:                                  # theme, crt: the display does those
-                self.switches.append(word)
-                self.pending += b'\r\n$ '
-            elif v is not None:
-                self.pending += b'\r\n%d\r\n$ ' % v
-            elif all((w & 0x3FF) in BLANKS for w in row):
-                self.pending += b'\r\n$ '
-            else:
-                self.pending += SAY['unknown'] + b'$ '
+            self.pending += self.run_line() + b'$ '
             return True
         return b == 0x0A                                # the line feed after a carriage return
+
+    def run_line(self):
+        """Enter at the shell: read the line back from the screen, from after the prompt to the
+        end of the cursor's row, and run it. The first word is the command; key, iv and dec take
+        hex digits (spaces allowed), enc the rest of the line after one space, up to its last
+        non-blank character. Returns what the shell prints before its next prompt."""
+        cells = [w & 0x3FF for r in range(min(self.prow, self.cy), self.cy + 1) for w in self.scr[r]][2:]
+        word, word_end, args = [], False, False
+        data, tlen, bad, ovf, hi = [], 0, False, False, None
+        for g in cells:
+            blank = g in (0x00, 0x20)
+            if word_end:
+                args |= not blank
+                if cmd == 'enc':
+                    if len(data) == 0x6FF:
+                        ovf = True                      # more than fits in 112 blocks, padded
+                    else:
+                        data.append(g & 0xFF)
+                        if not blank:
+                            tlen = len(data)
+                elif cmd in ('key', 'iv', 'dec') and not blank:
+                    nib = HEX.get(g)
+                    if nib is None:
+                        bad = True
+                    elif hi is None:
+                        hi = nib
+                    else:
+                        data.append(hi << 4 | nib)
+                        hi = None
+            elif blank:
+                if word:
+                    word_end = True
+                    cmd = ''.join(map(chr, word))
+            else:
+                word.append(g)
+        cmd = ''.join(chr(g) for g in word if g < 0x100)
+        if len(cmd) != len(word) or cmd not in COMMANDS:
+            return SAY['unknown'] if word else b'\r\n'
+        if cmd in ('help', 'clear', 'theme', 'crt'):
+            if args:
+                return SAY['unknown']
+            if cmd in ('theme', 'crt'):
+                self.switches.append(cmd)               # the display does those
+                return b'\r\n'
+            return SAY[cmd]
+        if cmd in ('key', 'iv'):
+            if bad or hi is not None or len(data) != 16:
+                return SAY['keylen']
+            if cmd == 'key':
+                self.aes_key = bytes(data)
+            else:
+                self.aes_iv = bytes(data)
+            return b'\r\n'
+        if cmd == 'enc':
+            if ovf:
+                return SAY['long']
+            ct = term_aes.cbc_encrypt(self.aes_key, self.aes_iv, term_aes.pad(bytes(data[:tlen])))
+            return b'\r\n' + ct.hex().encode() + b'\r\n'
+        if bad or hi is not None or not data or len(data) % 16:
+            return SAY['declen']
+        pt = term_aes.unpad(term_aes.cbc_decrypt(self.aes_key, self.aes_iv, bytes(data)))
+        if pt is None:
+            return SAY['badpad']
+        return b'\r\n' + bytes(c if 0x20 <= c < 0x7F else 0x2E for c in pt) + b'\r\n'
 
     def control(self, b):
         if b == 0x07:
@@ -257,6 +313,35 @@ class Term:
             self.gl = 1
         elif b == 0x0F:
             self.gl = 0
+
+    def esc(self, b):
+        """The byte after ESC."""
+        if 0x20 <= b < 0x30:
+            self.inter, self.state = b, ESC_INT
+        elif b == ord('['):
+            self.params, self.np, self.ovf, self.priv, self.inter, self.fresh = [0] * 16, 0, False, 0, 0, True
+            self.state = CSI
+        elif b == ord(']'):
+            self.osc_num, self.osc_phase = 0, 0
+            self.state = OSC
+        elif b in b'PX^_':
+            self.state = STR
+        elif b == ord('7'):
+            self.save_cursor()
+        elif b == ord('8'):
+            self.restore_cursor()
+        elif b == ord('D'):
+            self.wrap = False
+            self.index()
+        elif b == ord('E'):
+            self.wrap = False
+            self.cx = 0
+            self.index()
+        elif b == ord('M'):
+            self.wrap = False
+            self.rindex()
+        elif b == ord('c'):
+            self.reset()
 
     def byte(self, b):
         st = self.state
@@ -309,34 +394,10 @@ class Term:
 
         if st == ESC:
             self.state = GROUND
-            if self.local and not self.saying and b != ord('['):
+            drop = self.local and not self.saying and b != ord('[')
+            self.esc(b)                                 # (an ESC D still moves the shell's prompt row)
+            if drop:
                 self.local = False                      # a program is driving the terminal
-            if 0x20 <= b < 0x30:
-                self.inter, self.state = b, ESC_INT
-            elif b == ord('['):
-                self.params, self.np, self.ovf, self.priv, self.inter, self.fresh = [0] * 16, 0, False, 0, 0, True
-                self.state = CSI
-            elif b == ord(']'):
-                self.osc_num, self.osc_phase = 0, 0
-                self.state = OSC
-            elif b in b'PX^_':
-                self.state = STR
-            elif b == ord('7'):
-                self.save_cursor()
-            elif b == ord('8'):
-                self.restore_cursor()
-            elif b == ord('D'):
-                self.wrap = False
-                self.index()
-            elif b == ord('E'):
-                self.wrap = False
-                self.cx = 0
-                self.index()
-            elif b == ord('M'):
-                self.wrap = False
-                self.rindex()
-            elif b == ord('c'):
-                self.reset()
         elif st == ESC_INT:
             if 0x20 <= b < 0x30:
                 self.inter = b
@@ -605,71 +666,40 @@ class Term:
 
 
 # the built-in shell's commands, and what it prints (from a ROM in terminal.v)
-COMMANDS = ['help', 'clear', 'theme', 'crt']
-BLANKS = (0x00, 0x20, 0x24)                             # blank, space, the prompt's $
+COMMANDS = ['help', 'clear', 'theme', 'crt', 'key', 'iv', 'enc', 'dec']
+HEX = {ord(c): int(c, 16) for c in '0123456789abcdefABCDEF'}
 _Y, _D, _R = '\x1b[38;5;221m', '\x1b[38;5;245m', '\x1b[0m'
+
+
+def _help(cmd, arg, text):
+    return f'  {_Y}{cmd}{_R} {_D}{arg}{_R}' + ' ' * (15 - len(cmd) - len(arg)) + text
+
+
 SAY = {
     'help': ('\r\n' + '\r\n'.join([
-        f'  {_Y}help{_R}            this list',
-        f'  {_Y}clear{_R}           clear the screen',
-        f'  {_Y}theme{_R}           the next colour theme: colour, green or amber',
-        f'  {_Y}crt{_R}             CRT scanlines on or off',
-        f'  {_Y}12 + 30 - 5{_R}     add and subtract whole numbers',
+        _help('help', '', 'this list'),
+        _help('clear', '', 'clear the screen'),
+        _help('theme', '', 'the next colour theme: colour, green or amber'),
+        _help('crt', '', 'CRT scanlines on or off'),
+        _help('key', '<hex>', 'set the AES-128 key: 32 hex digits'),
+        _help('iv', '<hex>', 'set the CBC initial vector: 32 hex digits'),
+        _help('enc', '<text>', 'encrypt the text (AES-128-CBC, PKCS#7 padding), in hex'),
+        _help('dec', '<hex>', 'decrypt that hex back to text'),
+        f'  {_D}The key and IV start as the example ones in NIST SP 800-38A.{_R}',
         f'  {_D}Programs that send escape sequences take over the screen;{_R}',
         f'  {_D}hold S1 to come back to this shell.{_R}']) + '\r\n').encode(),
     'clear': b'\x1b[H\x1b[2J',
-    'unknown': f'\r\n{_D}not a sum or a command: try{_R} {_Y}help{_R}\r\n'.encode(),
+    'unknown': f'\r\n{_D}not a command: try{_R} {_Y}help{_R}\r\n'.encode(),
+    'keylen': f'\r\n{_D}key and iv take 32 hex digits{_R}\r\n'.encode(),
+    'declen': f'\r\n{_D}dec takes hex digits, a multiple of 32{_R}\r\n'.encode(),
+    'badpad': f'\r\n{_D}bad padding: the wrong key or IV?{_R}\r\n'.encode(),
+    'long': f'\r\n{_D}too long{_R}\r\n'.encode(),
 }
-
-
-def command(row):
-    """The command typed on a row: its only word, if that is one of COMMANDS."""
-    word, ended = '', False
-    for w in row:
-        g = w & 0x3FF
-        if g in BLANKS:
-            ended = ended or bool(word)
-        elif ended:
-            return None                                 # a second word
-        else:
-            word += chr(g)
-    return word if word in COMMANDS else None
-
-
-def evaluate(row):
-    """The value of a line typed at the shell: a sum of 32-bit integers, or None."""
-    mask = 0xFFFFFFFF
-    total = num = 0
-    minus = in_num = any_token = False
-    expect = True                                       # a number must come next
-    for w in row:
-        g = w & 0x3FF
-        if g in (0x00, 0x20, 0x24):                     # blank, space, the prompt's $
-            in_num = False
-        elif 0x30 <= g <= 0x39:
-            if in_num:
-                num = (num * 10 + g - 0x30) & mask
-            elif expect:
-                num, in_num, expect, any_token = g - 0x30, True, False, True
-            else:
-                return None                             # two numbers in a row
-        elif g in (0x2B, 0x2D):
-            if expect and any_token:
-                return None                             # two operators in a row
-            if not expect:
-                total = (total - num if minus else total + num) & mask
-            minus, expect, in_num, any_token = g == 0x2D, True, False, True
-        else:
-            return None
-    if expect:
-        return None
-    total = (total - num if minus else total + num) & mask
-    return total - (1 << 32) if total >> 31 else total
 
 
 # ------------------------------------------------------------------ the title and status bars
 # Bar template word: like a cell word, but bits 31:29 say what goes in the cell
-T_STATIC, T_TITLE, T_DIGIT, T_SPARK, T_DOT, T_THEME = range(6)
+T_STATIC, T_TITLE, T_DIGIT, T_DOT, T_THEME = 0, 1, 2, 4, 5
 THEMES = ['COLOR', 'GREEN', 'AMBER']
 IDLE_DOT = 238
 
@@ -693,9 +723,7 @@ def bar_templates():
         g = glyph_of(default[i]) if i < len(default) else 0x20
         title[TITLE_COL + i] = tword(T_TITLE, g, 252, tb, bold=True)
     for i, ch in enumerate('RX'):
-        title[63 + i] = tword(T_STATIC, glyph_of(ch), 245, tb)
-    for i in range(8):
-        title[66 + i] = tword(T_SPARK, i, 80, tb)
+        title[72 + i] = tword(T_STATIC, glyph_of(ch), 245, tb)
     title[75] = tword(T_DOT, glyph_of('●'), 83, tb)
 
     def text(s, fg, bg, fields=(), bold=False):
@@ -710,11 +738,9 @@ def bar_templates():
         return cells
 
     mid = 234
-    left = [(' NANO TERM ', 16, 38, (), True), (' ####### 8N1 ', 252, 238, tuple(range(17, 24)), False),
+    left = [(' NANO TERM ', 16, 38, (), True), (' ####### 8N1 ', 252, 238, tuple(range(4, 11)), False),
             (' Ln ## Col ## ', 250, 236, (0, 1, 2, 3), False)]
-    right = [(' RX ####### ', 250, 236, tuple(range(4, 11)), False),
-             (' ##:##:## ', 252, 238, tuple(range(11, 17)), False),
-             (' $$$$$ ', 16, 38, (), True)]
+    right = [(' $$$$$ ', 16, 38, (), True)]
     status = []
     for i, (s, fg, bg, fields, bold) in enumerate(left):
         status += text(s, fg, bg, fields, bold)
@@ -735,18 +761,16 @@ def bar_cells(templates, st):
     """What the bar updater writes, given the live values in st (a dict)."""
     def digits(v, n):
         return [(v // 10 ** (n - 1 - i)) % 10 for i in range(n)]
-    d = digits(st['cy'] + 1, 2) + digits(st['cx'] + 1, 2) + digits(st['rx'], 7) + \
-        digits(st['hours'], 2) + digits(st['minutes'], 2) + digits(st['seconds'], 2) + digits(st['baud'], 7)
+    d = digits(st['cy'] + 1, 2) + digits(st['cx'] + 1, 2) + digits(st['baud'], 7)
     blank = set()
     if d[0] == 0:
         blank.add(0)
     if d[2] == 0:
         blank.add(2)
-    for first, last in ((4, 10), (17, 23)):          # leading zeros of the byte count and the speed
-        for i in range(first, last):
-            if d[i] != 0:
-                break
-            blank.add(i)
+    for i in range(4, 10):                          # leading zeros of the speed
+        if d[i] != 0:
+            break
+        blank.add(i)
     cells = []
     for col, t in enumerate(templates):
         kind, g = t >> 29, t & 0x3FF
@@ -756,22 +780,12 @@ def bar_cells(templates, st):
             g = st['title'][i] if i < len(st['title']) else 0x20
         elif kind == T_DIGIT:
             g = 0x20 if g in blank else 0x30 + d[g]
-        elif kind == T_SPARK:
-            level = st['spark'][g]
-            g = 0x20 if level == 0 else 0x180 + level
         elif kind == T_DOT:
             fg = fg if st['active'] else IDLE_DOT
         elif kind == T_THEME:
             g = ord(THEMES[st['theme']][g])
         cells.append(word(g, fg, bg, bold))
     return cells
-
-
-def spark_level(count):
-    """Bytes received in one second -> sparkline height 0-8."""
-    if count == 0:
-        return 0
-    return min(8, 1 + (count.bit_length() - 1) // 2)
 
 
 # ------------------------------------------------------------------ the renderer
@@ -846,8 +860,8 @@ def render(cells, rowmap, bank, st):
 
 def default_bars(term, baud=2000000, theme=0):
     t = bar_templates()
-    st = {'cx': term.cx, 'cy': term.cy, 'rx': 0, 'hours': 0, 'minutes': 0, 'seconds': 0, 'baud': baud,
-          'spark': [0] * 8, 'active': False, 'theme': theme, 'title_custom': term.title_custom,
+    st = {'cx': term.cx, 'cy': term.cy, 'baud': baud, 'active': False, 'theme': theme,
+          'title_custom': term.title_custom,
           'title': term.title}
     return bar_cells(t[:COLS], st), bar_cells(t[COLS:], st)
 

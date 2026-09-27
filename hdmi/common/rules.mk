@@ -1,6 +1,7 @@
 # Shared build rules for the HDMI designs. A design's Makefile sets
 #   NAME  output file name        SRC   its Verilog files (besides the shared HDMI core)
-#   DEPS  files it `includes      DATA  files generated before synthesis
+#   DEPS  other files it needs     DATA  files generated before synthesis
+# and optionally SYNTH_OPTS (extra synth_gowin options) or SYNTH (the whole synthesis flow),
 # and then includes this file. Run make from the design's folder:
 #   make          build NAME.fs          make load    load into SRAM (lost on power cycle)
 #   make flash    write to flash         make clean   remove build and generated files
@@ -14,13 +15,14 @@ CORE    := $(COMMON)/dvi_tx.v $(COMMON)/tmds_encoder.v
 SEED    ?= 1
 # Pixel clock in MHz, for timing analysis
 FREQ    ?= 25.2
-# Extra synth_gowin options
+# Extra synth_gowin options, or the whole synthesis command list (after reading the sources)
 SYNTH_OPTS ?=
+SYNTH   ?= synth_gowin -top top $(SYNTH_OPTS)
 
 all: $(NAME).fs
 
 $(NAME).json: $(SRC) $(CORE) $(DEPS) $(DATA)
-	yosys -q -l $(NAME)-yosys.log -p "read_verilog -I. $(SRC) $(CORE); synth_gowin -top top $(SYNTH_OPTS) -json $@"
+	yosys -q -l $(NAME)-yosys.log -p "read_verilog -I. $(SRC) $(CORE); $(SYNTH); write_json $@"
 
 $(NAME)_pnr.json: $(NAME).json $(CST)
 	nextpnr-himbaechel-gowin -q -l $(NAME)-nextpnr.log --seed $(SEED) --freq $(FREQ) --json $< --write $@ \

@@ -2,7 +2,7 @@
 """Host side of NANO TERM: talk to the Tang Nano 9K terminal over its USB serial port.
 
   ./nanoterm.py shell            run your shell on the HDMI screen, typed from this keyboard
-  ./nanoterm.py type             type at the board's built-in shell (sums like 5 + 5; Ctrl-] quits)
+  ./nanoterm.py type             type at the board's built-in shell (help, enc, dec...; Ctrl-] quits)
   ./nanoterm.py demo             an animated demo: dashboard, colours, braille plots, rain
   ./nanoterm.py send [FILE]      send a file (or stdin) as it is
   ./nanoterm.py check [FILE...]  test the board: stream test data (and any recorded sessions) and

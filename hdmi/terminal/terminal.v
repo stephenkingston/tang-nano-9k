@@ -11,8 +11,9 @@
 // serial speed (9600 to 3000000 baud) is detected from the line.
 //
 // It starts as a tiny shell for typing at it directly: a "$ " prompt, Backspace, and Enter,
-// which works out sums like 5 + 5. S1 cycles the colour theme (colour, green phosphor, amber
-// phosphor) and, held down, brings the shell back; S2 toggles CRT scanlines.
+// which runs commands, among them AES-128-CBC encryption and decryption (term_aes.v).
+// S1 cycles the colour theme (colour, green phosphor, amber phosphor) and, held down, brings
+// the shell back; S2 toggles CRT scanlines.
 // LEDs: 0 receiving, 1 sending, 4 measuring the speed, 5 overrun.
 module top (
     input  wire       clk,          // 27 MHz oscillator
@@ -84,55 +85,16 @@ module top (
     reg [7:0]  frames = 8'd0;
     reg [5:0]  since_rx = 6'd63;            // frames since the last byte (restarts the cursor blink)
     reg [3:0]  rx_act = 4'd0, tx_act = 4'd0, bell_left = 4'd0;
-    reg [27:0] rx_bcd = 28'd0;              // bytes received, 7 decimal digits
-    reg [5:0]  fsec = 6'd0;                 // frames into the current second
-    reg [23:0] uptime = 24'd0;              // hh mm ss, BCD
-    reg [15:0] per_sec = 16'd0;             // bytes received in the current second
-    reg [31:0] spark = 32'd0;               // bytes per second, 8 seconds of history, newest last
     reg [1:0]  theme = 2'd0;
     reg        crt = 1'b0, ovf_seen = 1'b0;
     reg [1:0]  btn_s1 = 2'b00, btn_s2 = 2'b00, btn_prev = 2'b00;
     reg [5:0]  s1_held = 6'd0;              // frames S1 has been down
     wire       shell_req = frame && btn_s2[0] && (s1_held == 6'd30);
 
-    // BCD increment of a digit string: add one to the lowest digit and carry
-    function [27:0] bcd_inc;
-        input [27:0] v;
-        integer i;
-        reg carry;
-        begin
-            carry = 1'b1;
-            for (i = 0; i < 7; i = i + 1) begin
-                if (carry) begin
-                    if (v[4*i +: 4] == 4'd9) bcd_inc[4*i +: 4] = 4'd0;
-                    else begin bcd_inc[4*i +: 4] = v[4*i +: 4] + 1'b1; carry = 1'b0; end
-                end else
-                    bcd_inc[4*i +: 4] = v[4*i +: 4];
-            end
-        end
-    endfunction
-
-    function [3:0] spark_level;             // 0 for nothing, else 1 + log2(bytes) / 2, up to 8
-        input [15:0] n;
-        integer i;
-        reg [4:0] msb;
-        begin
-            msb = 5'd0;
-            for (i = 0; i < 16; i = i + 1)
-                if (n[i]) msb = i;
-            if (n == 16'd0)          spark_level = 4'd0;
-            else if (msb >= 5'd14)   spark_level = 4'd8;
-            else                     spark_level = 4'd1 + msb[4:1];
-        end
-    endfunction
-
-    wire sec = frame && (fsec == 6'd59);
     always @(posedge clk_pix) begin
         btn_s1 <= ~btn;
         btn_s2 <= btn_s1;
-        if (frame) fsec <= sec ? 6'd0 : fsec + 1'b1;
         if (rx_valid) begin
-            rx_bcd <= bcd_inc(rx_bcd);
             rx_act <= 4'd6;
             since_rx <= 6'd0;
         end
@@ -141,32 +103,6 @@ module top (
         if (bell)
             bell_left <= 4'd8;
         if (fifo_ovf) ovf_seen <= 1'b1;
-        if (sec) begin
-            per_sec <= rx_valid ? 16'd1 : 16'd0;
-            spark <= {spark_level(per_sec), spark[31:4]};
-            if (uptime[3:0] != 4'd9) uptime[3:0] <= uptime[3:0] + 1'b1;
-            else begin
-                uptime[3:0] <= 4'd0;
-                if (uptime[7:4] != 4'd5) uptime[7:4] <= uptime[7:4] + 1'b1;
-                else begin
-                    uptime[7:4] <= 4'd0;
-                    if (uptime[11:8] != 4'd9) uptime[11:8] <= uptime[11:8] + 1'b1;
-                    else begin
-                        uptime[11:8] <= 4'd0;
-                        if (uptime[15:12] != 4'd5) uptime[15:12] <= uptime[15:12] + 1'b1;
-                        else begin
-                            uptime[15:12] <= 4'd0;
-                            if (uptime[19:16] != 4'd9) uptime[19:16] <= uptime[19:16] + 1'b1;
-                            else begin
-                                uptime[19:16] <= 4'd0;
-                                uptime[23:20] <= (uptime[23:20] == 4'd9) ? 4'd0 : uptime[23:20] + 1'b1;
-                            end
-                        end
-                    end
-                end
-            end
-        end else if (rx_valid && per_sec != 16'hFFFF)
-            per_sec <= per_sec + 1'b1;
         if (frame) begin
             frames <= frames + 1'b1;
             if (!rx_valid && since_rx != 6'd63) since_rx <= since_rx + 1'b1;
@@ -189,8 +125,7 @@ module top (
     end
 
     term_bars bars (
-        .clk(clk_pix), .ok(idle), .ln(ln_bcd), .col(col_bcd), .rx_bcd(rx_bcd), .uptime(uptime), .spark(spark),
-        .baud_bcd(rate_bcd(rate)),
+        .clk(clk_pix), .ok(idle), .ln(ln_bcd), .col(col_bcd), .baud_bcd(rate_bcd(rate)),
         .active(rx_act != 0), .theme(theme), .title_custom(title_custom),
         .w_en(b_we), .w_addr(b_waddr), .w_data(b_wdata)
     );
@@ -459,19 +394,23 @@ endmodule
 
 
 // The terminal engine: takes bytes from the FIFO, parses UTF-8 and escape sequences and
-// edits the screen, one cell per clock. Scrolling rotates a row map (logical row -> physical
-// row) and blanks one row, so it costs 80 clocks whatever the size of the scroll region.
+// edits the screen, one cell per step. Scrolling rotates a row map (logical row -> physical
+// row) and blanks one row, so it costs 80 steps whatever the size of the scroll region.
+// It takes a step every other clock (ce). The chip's real delays are well beyond what
+// nextpnr's timing model predicts: builds whose engine had to settle in one 37 ns clock failed
+// on the board although their timing reports passed, and the same builds worked at a slower
+// clock. With two clocks a step they have the margin they need.
 module term_core (
     input  wire         clk,
     input  wire         in_empty,
-    input  wire [7:0]   in_data,            // the byte popped on the previous clock
+    input  wire [7:0]   in_data,            // the byte popped on the previous clock (kept in bq)
     output wire         in_rd,
-    output reg          w_en = 1'b0,
+    output wire         w_en,               // (one clock per write)
     output reg  [12:0]  w_addr = 13'd0,
     output reg  [31:0]  w_data = 32'd0,
     output wire [12:0]  r_addr,
     input  wire         r_ok,               // the read port is free this clock
-    input  wire [31:0]  r_data,             // the cell read on the previous clock
+    input  wire [31:0]  r_data,             // the cell read on the previous clock (kept in rq)
     output wire         idle,
     output reg  [6:0]   cx = INIT_CX,
     output reg  [4:0]   cy = INIT_CY,
@@ -486,10 +425,10 @@ module term_core (
     output wire [7:0]   ln_bcd,             // cursor row and column + 1, as two decimal digits
     output wire [7:0]   col_bcd,
     input  wire         shell_req,          // S1 held: back to the built-in shell
-    output reg          cmd_theme = 1'b0,   // the shell's theme and crt commands, for the display
-    output reg          cmd_crt = 1'b0,
+    output wire         cmd_theme,          // the shell's theme and crt commands, for the display
+    output wire         cmd_crt,
     input  wire         tx_busy,
-    output reg          tx_start = 1'b0,
+    output wire         tx_start,
     output reg  [7:0]   tx_data = 8'd0
 );
     `include "term_params.vh"
@@ -499,12 +438,33 @@ module term_core (
                S_SCROLL = 5'd6, S_FILL = 5'd7, S_SH_RD = 5'd8, S_SH_WR = 5'd9, S_SGR = 5'd10,
                S_DECSET = 5'd11, S_SM = 5'd12, S_SUM_RD = 5'd13, S_SUM_ACC = 5'd14, S_REPLY = 5'd15,
                S_SUM_DONE = 5'd16, S_USCAN = 5'd17, S_UCMP = 5'd18, S_EV_RD = 5'd19, S_EV = 5'd20,
-               S_EV_ADD = 5'd21, S_EV_END = 5'd22, S_EV_SIGN = 5'd23, S_SAY = 5'd24;
+               S_AES = 5'd21, S_EV_END = 5'd22, S_PADCHK = 5'd23, S_SAY = 5'd24;
     localparam P_GROUND = 4'd0, P_ESC = 4'd1, P_ESC_INT = 4'd2, P_CSI = 4'd3, P_CSI_IGN = 4'd4,
                P_OSC = 4'd5, P_OSC_ESC = 4'd6, P_STR = 4'd7, P_STR_ESC = 4'd8;
     localparam [31:0] BLANK0 = {6'd0, 8'd0, 8'd7, 10'h020};
 
     reg [4:0]  state = S_IDLE;
+    // a step every other clock: the engine's registers change only at the end of a ce clock, so
+    // everything computed from them has two clocks to settle. A cell read is sampled at the end
+    // of a ce clock (its address has been steady for two clocks) and kept in rq for the next step;
+    // a byte popped from the FIFO is kept in bq the same way, the clock after the pop (the block
+    // RAM's output may move on after that).
+    reg        ce = 1'b0, shell_req_d = 1'b0;
+    reg        w_en_r = 1'b0, cmd_theme_r = 1'b0, cmd_crt_r = 1'b0, tx_start_r = 1'b0;
+    reg [31:0] rq = 32'd0;
+    reg [7:0]  bq = 8'd0;
+    always @(posedge clk) begin
+        ce <= ~ce;
+        shell_req_d <= shell_req;
+        if (!ce) begin
+            rq <= r_data;
+            bq <= in_data;
+        end
+    end
+    assign w_en = w_en_r && !ce;
+    assign cmd_theme = cmd_theme_r && !ce;
+    assign cmd_crt = cmd_crt_r && !ce;
+    assign tx_start = tx_start_r && !ce;
     reg [3:0]  pst = P_GROUND;
     reg        wrap = 1'b0;
     reg [7:0]  fg = 8'd7, bg = 8'd0;
@@ -552,9 +512,7 @@ module term_core (
     reg [4:0]  pi = 5'd0;
     reg        set_on = 1'b0;
     reg [3:0]  sgr_mode = 4'd0;
-    reg [5:0]  tc_cube = 6'd0;              // truecolour so far: cube index, brightest, darkest, sum
-    reg [7:0]  tc_max = 8'd0, tc_min = 8'd0;
-    reg [9:0]  tc_sum = 10'd0;
+    reg [5:0]  tc_cube = 6'd0;              // truecolour so far: the colour cube index
     reg [4:0]  sum_row = 5'd0;
     reg [6:0]  sum_col = 7'd0;
     reg [31:0] sum = 32'd0;
@@ -564,29 +522,44 @@ module term_core (
 
     // The built-in shell, up at power-up, for typing at the terminal directly (from minicom,
     // say): a "$ " prompt, Backspace (BS or DEL) rubs out, and Enter reads the line back from
-    // the screen and, if it is a sum like 5 + 5 or 7 - 12, prints its value (32-bit integers)
-    // on the next line, then a new prompt. Arrow and editing keys are ignored; any other escape
+    // the screen (from the prompt, over every row it wrapped onto) and runs it. Besides help,
+    // clear, theme and crt there is AES-128 in CBC mode (term_aes): key and iv take 32 hex
+    // digits, enc encrypts the rest of the line (with PKCS#7 padding) and prints it in hex, and
+    // dec decrypts hex and prints the text. Arrow and editing keys are ignored; any other escape
     // sequence means a program is driving the terminal, and the shell steps aside until
-    // CSI ? 2112 h or S1 held down. The running total lives in sum; what the shell prints goes
-    // through the terminal like received bytes (src_say).
+    // CSI ? 2112 h or S1 held down. What the shell prints goes through the terminal like
+    // received bytes (src_say).
     reg        local = 1'b1;
     reg        last_cr = 1'b0, src_say = 1'b0, want_shell = 1'b0;
-    reg [4:0]  prow = INIT_CY;              // the row of the last prompt
+    reg [4:0]  prow = INIT_CY;              // the row of the last prompt (it moves up as the screen scrolls)
     reg [7:0]  say_q = 8'd0;
     reg [3:0]  say_ph = 4'd0;               // what the shell prints next (0: nothing)
-    reg        ev_ok = 1'b0, ev_neg = 1'b0, ev_minus = 1'b0, ev_in = 1'b0, ev_expect = 1'b0;
-    reg        ev_any = 1'b0, ev_bad = 1'b0, ev_started = 1'b0;
-    reg [31:0] ev_num = 32'd0;
+    reg [1:0]  say_out = 2'd0;              // after the line break: 0 nothing, 1 bytes in hex, 2 text
+    reg [4:0]  ev_row = 5'd0;
     reg [6:0]  ev_col = 7'd0;
-    reg [3:0]  ev_dig = 4'd0, ev_k = 4'd0, ev_d = 4'd0;
     // commands: while the line is read, a matcher per command (cmd_char, cmd_len in term_uni.vh)
-    reg [3:0]  cm_ok = 4'd0;                // command k still matches the word so far
-    reg [2:0]  cm_i [0:3];                  // letters of command k matched
-    reg        word_on = 1'b0, word_end = 1'b0, nonblank = 1'b0;
+    reg [7:0]  cm_ok = 8'd0;                // command k still matches the word so far
+    reg [2:0]  cm_i [0:7];                  // letters of command k matched
+    reg        word_on = 1'b0, word_end = 1'b0, nonblank = 1'b0, args = 1'b0;
+    // the argument, written to the AES unit's RAM at ap as it is read: hex digits (key, iv,
+    // dec) or the text (enc)
+    reg        a_hex = 1'b0, a_text = 1'b0, a_bad = 1'b0, a_ovf = 1'b0, a_half = 1'b0;
+    reg [3:0]  a_hi = 4'd0;
+    reg [10:0] ap = 11'd0, a_len = 11'd0, dlen = 11'd0;
+    reg [7:0]  pv = 8'd0;                   // the padding byte
+    reg        padded = 1'b0, pc_wait = 1'b0, pc_got = 1'b0;
+    reg [2:0]  aes_op = 3'd0;
+    reg [1:0]  aph = 2'd0;
+    reg        aes_go = 1'b0, aes_we = 1'b0;
+    reg [7:0]  aes_wd = 8'd0;
+    wire       aes_busy;
+    wire [7:0] aes_q;
+    term_aes aes (.clk(clk), .go(aes_go), .op(aes_op), .nblk(ap[10:4]), .busy(aes_busy), .h_we(aes_we),
+                  .h_addr(ap), .h_wdata(aes_wd), .h_rdata(aes_q));
     // what the shell prints from term_say.hex (0-terminated strings)
-    reg [7:0]  say_rom [0:1023];
+    reg [7:0]  say_rom [0:2047];
     initial $readmemh("term_say.hex", say_rom);
-    reg [9:0]  say_ptr = 10'd0;
+    reg [10:0] say_ptr = 11'd0;
     reg [7:0]  say_c = 8'd0;
     always @(posedge clk)
         say_c <= say_rom[say_ptr];
@@ -609,7 +582,7 @@ module term_core (
         for (i = 0; i < 2; i = i + 1) begin
             sv_cx[i] = 7'd0; sv_cy[i] = 5'd0; sv_fg[i] = 8'd7; sv_bg[i] = 8'd0; sv_fl[i] = 6'd0;
         end
-        for (i = 0; i < 4; i = i + 1)
+        for (i = 0; i < 8; i = i + 1)
             cm_i[i] = 3'd0;
     end
 
@@ -696,7 +669,7 @@ module term_core (
             S_SH_RD:  m_col = sh_src;
             S_SH_WR:  m_col = sh_dst;
             S_SUM_RD: begin m_row = sum_row; m_col = sum_col; end
-            S_EV_RD:  m_col = ev_col;                                       // the line typed at the shell
+            S_EV_RD:  begin m_row = ev_row; m_col = ev_col; end             // the line typed at the shell
             S_SCROLL: m_row = s_up ? s_top : s_bot;                       // the row that wraps around
             S_BYTE:   m_col = TITLE_COL + tlen;                           // an OSC title character
             default: ;
@@ -706,10 +679,10 @@ module term_core (
     wire        m_title = (state == S_BYTE) || (state == S_FILL && f_title);
     wire [12:0] m_addr = addr_of(m_title ? 6'd60 : {bank, m_map}, m_col);
     assign r_addr = m_addr;
-    assign in_rd = (state == S_IDLE) && !in_empty && say_ph == 4'd0 && !want_shell;
+    assign in_rd = ce && (state == S_IDLE) && !in_empty && say_ph == 4'd0 && !want_shell;
     assign idle = (state == S_IDLE);
 
-    wire [7:0]  b = src_say ? say_q : in_data;
+    wire [7:0]  b = src_say ? say_q : bq;
     wire        b_c0 = (b[7:5] == 3'd0);                                  // 0x00-0x1F
     wire        b_inter = (b[7:4] == 4'h2);                               // 0x20-0x2F
     wire        b_digit = (b[7:4] == 4'h3) && (b[3:0] < 4'd10);
@@ -719,15 +692,8 @@ module term_core (
     wire [7:0]  vc = (v[11:8] != 4'd0) ? 8'd255 : v[7:0];
     wire [20:0] u_lo = uq[53:33], u_hi = uq[32:12];
     wire [2:0]  q_v = cube_step(vc);
-    wire [7:0]  tc_hi = (vc > tc_max) ? vc : tc_max;
-    wire [7:0]  tc_lo = (vc < tc_min) ? vc : tc_min;
-    wire [9:0]  tc_all = tc_sum + {2'd0, vc};                           // r + 2g + b
-    wire [7:0]  tc_v = tc_all[9:2];
-    wire [11:0] tc_g13 = {4'd0, tc_v - 8'd3} * 12'd13;
     wire [7:0]  tc_cube6 = {tc_cube, 2'd0} + {1'b0, tc_cube, 1'b0};
-    wire [7:0]  truecolour = (tc_hi - tc_lo < 8'd16) ?
-                    ((tc_v < 8'd8) ? 8'd16 : (tc_v > 8'd238) ? 8'd231 : 8'd232 + tc_g13[11:7]) :
-                    8'd16 + tc_cube6 + {5'd0, q_v};
+    wire [7:0]  truecolour = 8'd16 + tc_cube6 + {5'd0, q_v};
 
     // the scroll rotation as masks over the 28 rows
     wire [27:0] ge_top = {28{1'b1}} << s_top;
@@ -741,33 +707,18 @@ module term_core (
     assign ln_bcd = rowdec;
     assign col_bcd = coldec;
 
-    // the shell's arithmetic: one adder for digits (x10, + d), sums, negating and printing
-    wire [9:0]  eg = r_data[9:0];                                       // the character being read
-    wire        e_digit = (eg[9:4] == 6'h03) && (eg[3:0] < 4'd10);
-    function [31:0] pow10;
-        input [3:0] k;
-        case (k)
-            4'd0: pow10 = 32'd1;          4'd1: pow10 = 32'd10;         4'd2: pow10 = 32'd100;
-            4'd3: pow10 = 32'd1000;       4'd4: pow10 = 32'd10000;      4'd5: pow10 = 32'd100000;
-            4'd6: pow10 = 32'd1000000;    4'd7: pow10 = 32'd10000000;   4'd8: pow10 = 32'd100000000;
-            default: pow10 = 32'd1000000000;
-        endcase
-    endfunction
-    reg  [31:0] ax, ay;
-    reg         asub;
-    wire [32:0] asum = {1'b0, ax} + {1'b0, asub ? ~ay : ay} + {32'd0, asub};
-    always @* begin
-        ax = sum;                                                       // total +/- number
-        ay = ev_num;
-        asub = ev_minus;
-        case (state)
-            S_EV:      if (e_digit) begin ax = {ev_num[28:0], 3'd0}; ay = {ev_num[30:0], 1'b0}; asub = 1'b0; end
-            S_EV_ADD:  begin ax = ev_num; ay = {28'd0, ev_dig}; asub = 1'b0; end
-            S_EV_SIGN: begin ax = 32'd0; ay = sum; asub = 1'b1; end
-            S_SAY:     begin ax = sum; ay = pow10(ev_k); asub = 1'b1; end    // carry: sum >= 10^k
-            default: ;
-        endcase
-    end
+    // the shell: the character being read, and the commands typed (complete)
+    wire [9:0]  eg = rq[9:0];
+    wire        e_blank = (eg == 10'h000) || (eg == 10'h020);
+    wire        e_hexd = (eg[9:4] == 6'h03 && eg[3:0] < 4'd10) ||
+                         ((eg[9:4] == 6'h04 || eg[9:4] == 6'h06) && eg[3:0] != 4'd0 && eg[3:0] < 4'd7);
+    wire [3:0]  e_nib = eg[6] ? eg[3:0] + 4'd9 : eg[3:0];
+    wire [7:0]  hit;                        // help clear theme crt key iv enc dec
+    generate
+        for (gi = 0; gi < 8; gi = gi + 1) begin : hits
+            assign hit[gi] = word_on && cm_ok[gi] && cm_i[gi] == cmd_len(gi);
+        end
+    endgenerate
 
     // ---------------------------------------------------------------- small jobs
     task index_down;                        // LF: move down, scrolling at the bottom margin
@@ -775,6 +726,7 @@ module term_core (
         begin
             if (cy == bot) begin
                 s_up <= 1'b1; s_top <= top; s_bot <= bot; s_cnt <= 5'd1; scr_ret <= ret; state <= S_SCROLL;
+                if (local && !src_say && prow != 5'd0) prow <= prow - 1'b1;     // the line being typed
             end else if (cy != 5'd27)
                 cy <= cy + 1'b1;
         end
@@ -923,20 +875,23 @@ module term_core (
     end
 
     // ---------------------------------------------------------------- the engine
-    always @(posedge clk) begin
-        w_en <= 1'b0;
+    always @(posedge clk) if (ce) begin
+        w_en_r <= 1'b0;
         bell <= 1'b0;
-        tx_start <= 1'b0;
-        cmd_theme <= 1'b0;
-        cmd_crt <= 1'b0;
-        if (shell_req) want_shell <= 1'b1;
+        tx_start_r <= 1'b0;
+        cmd_theme_r <= 1'b0;
+        cmd_crt_r <= 1'b0;
+        aes_go <= 1'b0;
+        aes_we <= 1'b0;
+        if (aes_we) ap <= ap + 1'b1;        // each byte written to the AES unit moves ap on
+        if (shell_req || shell_req_d) want_shell <= 1'b1;
         case (state)
         S_IDLE:
             if (want_shell) begin
                 want_shell <= 1'b0;
                 local <= 1'b1;
                 pst <= P_GROUND;
-                ev_ok <= 1'b0;
+                say_out <= 2'd0;
                 say_ph <= 4'd1;
             end else if (say_ph != 4'd0)
                 state <= S_SAY;
@@ -967,10 +922,11 @@ module term_core (
                     if (local && !src_say && (b == 8'h08 || b == 8'h7F)) begin      // Backspace
                         if (cy != prow || cx > 7'd2) rubout;
                     end else if (local && !src_say && (b == 8'h0D || (b == 8'h0A && !last_cr))) begin
-                        ev_col <= 7'd0; sum <= 32'd0; ev_num <= 32'd0;              // Enter: run the line
-                        ev_minus <= 1'b0; ev_in <= 1'b0; ev_expect <= 1'b1; ev_any <= 1'b0; ev_bad <= 1'b0;
-                        cm_ok <= 4'b1111; word_on <= 1'b0; word_end <= 1'b0; nonblank <= 1'b0;
-                        for (i = 0; i < 4; i = i + 1)
+                        ev_row <= (prow > cy) ? cy : prow; ev_col <= 7'd2;          // Enter: run the line
+                        cm_ok <= 8'hFF; word_on <= 1'b0; word_end <= 1'b0; nonblank <= 1'b0; args <= 1'b0;
+                        a_hex <= 1'b0; a_text <= 1'b0; a_bad <= 1'b0; a_ovf <= 1'b0; a_half <= 1'b0;
+                        ap <= 11'd0; a_len <= 11'd0; padded <= 1'b0;
+                        for (i = 0; i < 8; i = i + 1)
                             cm_i[i] <= 3'd0;
                         state <= S_EV_RD;
                     end else if (local && !src_say && b == 8'h0A) begin          // (after a CR)
@@ -1168,7 +1124,7 @@ module term_core (
                     end else
                         osc_phase <= 2'd2;
                 end else if (osc_phase == 2'd1 && b_print && tlen < TITLE_LEN) begin
-                    w_en <= 1'b1;
+                    w_en_r <= 1'b1;
                     w_addr <= m_addr;
                     w_data <= TITLE_WORD | {24'd0, b};
                     tlen <= tlen + 1'b1;
@@ -1228,7 +1184,7 @@ module term_core (
                 state <= S_PUT_W;
 
         S_PUT_W: begin
-            w_en <= 1'b1;
+            w_en_r <= 1'b1;
             w_addr <= m_addr;
             w_data <= {fl, pen_b, pen_f, put_glyph};
             last_g <= put_g; last_w <= put_w; last_ok <= 1'b1;
@@ -1243,7 +1199,7 @@ module term_core (
         end
 
         S_PUT_W2: begin                     // right half of a double-width character
-            w_en <= 1'b1;
+            w_en_r <= 1'b1;
             w_addr <= m_addr;
             w_data <= {fl, pen_b, pen_f, G_WIDE_R[9:0]};
             if (cx < 7'd78) cx <= cx + 2'd2;
@@ -1270,7 +1226,7 @@ module term_core (
             end
 
         S_FILL: begin
-            w_en <= 1'b1;
+            w_en_r <= 1'b1;
             w_addr <= m_addr;
             w_data <= f_word;
             if (f_row == f_erow && f_col == f_ecol)
@@ -1289,9 +1245,9 @@ module term_core (
                 state <= S_SH_WR;
 
         S_SH_WR: begin
-            w_en <= 1'b1;
+            w_en_r <= 1'b1;
             w_addr <= m_addr;
-            w_data <= r_data;
+            w_data <= rq;
             sh_dst <= sh_ins ? sh_dst - 1'b1 : sh_dst + 1'b1;
             state <= S_SH_RD;
         end
@@ -1338,12 +1294,11 @@ module term_core (
                     4'd3: begin fg <= vc; sgr_mode <= 4'd0; end
                     4'd4: begin bg <= vc; sgr_mode <= 4'd0; end
                     4'd5, 4'd8: begin                               // red
-                        tc_cube <= {3'd0, q_v}; tc_max <= vc; tc_min <= vc; tc_sum <= {2'd0, vc};
+                        tc_cube <= {3'd0, q_v};
                         sgr_mode <= sgr_mode + 1'b1;
                     end
                     4'd6, 4'd9: begin                               // green
-                        tc_cube <= tc_cube6[5:0] + {3'd0, q_v}; tc_max <= tc_hi; tc_min <= tc_lo;
-                        tc_sum <= tc_sum + {1'b0, vc, 1'b0};
+                        tc_cube <= tc_cube6[5:0] + {3'd0, q_v};
                         sgr_mode <= sgr_mode + 1'b1;
                     end
                     4'd7: begin fg <= truecolour; sgr_mode <= 4'd0; end                   // blue
@@ -1365,7 +1320,7 @@ module term_core (
                     12'd1048: if (set_on) save_cursor(bank); else restore_cursor(bank);
                     12'd2112: begin                                     // the built-in shell
                         local <= set_on;
-                        if (set_on) begin ev_ok <= 1'b0; say_ph <= 4'd1; end
+                        if (set_on) begin say_out <= 2'd0; say_ph <= 4'd1; end
                     end
                     12'd47, 12'd1047, 12'd1049:
                         if (set_on && !bank) begin
@@ -1400,14 +1355,14 @@ module term_core (
                 state <= S_SUM_ACC;
 
         S_SUM_ACC:
-            if (dumping && (tx_busy || tx_start))
+            if (dumping && (tx_busy || tx_start_r))
                 state <= S_SUM_RD;                          // the transmitter is busy: read the cell again
             else begin
                 if (dumping) begin
-                    tx_start <= 1'b1;
-                    tx_data <= r_data[7:0];
+                    tx_start_r <= 1'b1;
+                    tx_data <= rq[7:0];
                 end
-                sum <= {sum[30:0], sum[31]} ^ r_data;      // rotate left, then XOR
+                sum <= {sum[30:0], sum[31]} ^ rq;          // rotate left, then XOR
                 if (sum_col != 7'd79) begin
                     sum_col <= sum_col + 1'b1;
                     state <= S_SUM_RD;
@@ -1423,105 +1378,118 @@ module term_core (
             reply(3'd4);
 
         S_EV_RD:                            // the shell: read the line typed, a character at a time
-            if (ev_col == 7'd80)
-                state <= S_EV_END;
-            else if (r_ok)
+            if (ev_col == 7'd80) begin
+                if (ev_row == cy) state <= S_EV_END;
+                else begin ev_row <= ev_row + 1'b1; ev_col <= 7'd0; end
+            end else if (r_ok)
                 state <= S_EV;
 
         S_EV: begin
             ev_col <= ev_col + 1'b1;
             state <= S_EV_RD;
-            // the command matchers
-            if (eg == 10'h000 || eg == 10'h020 || eg == 10'h024) begin      // blank, space, $
-                if (word_on) word_end <= 1'b1;
+            if (word_end) begin                                             // the argument
+                if (!e_blank) args <= 1'b1;
+                if (a_text) begin
+                    if (ap == 11'h6FF) a_ovf <= 1'b1;                       // it must fit in 112 blocks, padded
+                    else begin
+                        aes_we <= 1'b1; aes_wd <= eg[7:0];
+                        if (!e_blank) a_len <= ap + 1'b1;                    // (trailing blanks are not typed)
+                    end
+                end else if (a_hex && !e_blank) begin
+                    if (!e_hexd) a_bad <= 1'b1;
+                    else if (a_half) begin aes_we <= 1'b1; aes_wd <= {a_hi, e_nib}; a_half <= 1'b0; end
+                    else begin a_hi <= e_nib; a_half <= 1'b1; end
+                end
+            end else if (e_blank) begin
+                if (word_on) begin                                          // the command word is over
+                    word_end <= 1'b1;
+                    a_hex <= hit[4] | hit[5] | hit[7];
+                    a_text <= hit[6];
+                end
             end else begin
                 nonblank <= 1'b1;
                 word_on <= 1'b1;
-                for (i = 0; i < 4; i = i + 1)
-                    if (word_end || cm_i[i] >= cmd_len(i) || eg != {2'b00, cmd_char(i, cm_i[i])})
-                        cm_ok[i] <= 1'b0;                                   // a second word, or a mismatch
+                for (i = 0; i < 8; i = i + 1)
+                    if (cm_i[i] >= cmd_len(i) || eg != {2'b00, cmd_char(i, cm_i[i])})
+                        cm_ok[i] <= 1'b0;
                     else
                         cm_i[i] <= cm_i[i] + 1'b1;
             end
-            // the sum
-            if (eg == 10'h000 || eg == 10'h020 || eg == 10'h024)
-                ev_in <= 1'b0;
-            else if (e_digit) begin
-                if (ev_in) begin
-                    ev_num <= asum[31:0];                                   // x 10, then + digit
-                    ev_dig <= eg[3:0];
-                    state <= S_EV_ADD;
-                end else if (ev_expect) begin
-                    ev_num <= {28'd0, eg[3:0]};
-                    ev_in <= 1'b1; ev_expect <= 1'b0; ev_any <= 1'b1;
-                end else
-                    ev_bad <= 1'b1;                                         // two numbers in a row
-            end else if (eg == 10'h02B || eg == 10'h02D) begin
-                if (ev_expect && ev_any)
-                    ev_bad <= 1'b1;                                         // two operators in a row
-                else begin
-                    if (!ev_expect) sum <= asum[31:0];
-                    ev_minus <= (eg == 10'h02D); ev_expect <= 1'b1; ev_in <= 1'b0; ev_any <= 1'b1;
-                end
-            end else
-                ev_bad <= 1'b1;
         end
 
-        S_EV_ADD: begin
-            ev_num <= asum[31:0];
-            state <= S_EV_RD;
-        end
-
-        S_EV_END: begin                     // the whole line read: a command, a sum, or neither
+        S_EV_END: begin                     // the whole line read: which command, and is its argument right?
             state <= S_IDLE;
-            ev_ok <= 1'b0;
+            say_out <= 2'd0;
             say_ph <= 4'd1;                                                 // (just a new prompt)
-            if (word_on && cm_ok[0] && cm_i[0] == cmd_len(0)) begin         // help
-                say_ptr <= SAY_HELP; say_ph <= 4'd10;
-            end else if (word_on && cm_ok[1] && cm_i[1] == cmd_len(1)) begin    // clear
-                say_ptr <= SAY_CLEAR; say_ph <= 4'd10;
-            end else if (word_on && cm_ok[2] && cm_i[2] == cmd_len(2))       // theme
-                cmd_theme <= 1'b1;
-            else if (word_on && cm_ok[3] && cm_i[3] == cmd_len(3))           // crt
-                cmd_crt <= 1'b1;
-            else if (!ev_bad && !ev_expect) begin
-                sum <= asum[31:0];
-                state <= S_EV_SIGN;
-            end else if (nonblank) begin                                    // not understood
-                say_ptr <= SAY_UNKNOWN; say_ph <= 4'd10;
+            if (!nonblank)
+                ;
+            else if (hit[0] && !args) begin say_ptr <= SAY_HELP; say_ph <= 4'd10; end
+            else if (hit[1] && !args) begin say_ptr <= SAY_CLEAR; say_ph <= 4'd10; end
+            else if (hit[2] && !args) cmd_theme_r <= 1'b1;
+            else if (hit[3] && !args) cmd_crt_r <= 1'b1;
+            else if (hit[4] || hit[5]) begin                                // key, iv: 16 bytes
+                if (a_bad || a_half || ap != 11'd16) begin say_ptr <= SAY_KEYLEN; say_ph <= 4'd10; end
+                else begin aes_op <= hit[4] ? 3'd1 : 3'd2; aph <= 2'd1; state <= S_AES; end
+            end else if (hit[6]) begin                                      // enc: pad the text
+                if (a_ovf) begin say_ptr <= SAY_LONG; say_ph <= 4'd10; end
+                else begin ap <= a_len; pv <= 8'd16 - a_len[3:0]; aes_op <= 3'd3; aph <= 2'd0; state <= S_AES; end
+            end else if (hit[7]) begin                                      // dec: whole blocks
+                if (a_bad || a_half || ap == 11'd0 || ap[3:0] != 4'd0) begin say_ptr <= SAY_DECLEN; say_ph <= 4'd10; end
+                else begin aes_op <= 3'd4; aph <= 2'd1; state <= S_AES; end
+            end else begin say_ptr <= SAY_UNKNOWN; say_ph <= 4'd10; end
+        end
+
+        S_AES:                              // pad (enc), run the AES unit, then print what it made
+            case (aph)
+                2'd0:                                                       // PKCS#7: pv bytes of pv
+                    if (padded && ap[3:0] == 4'd0) aph <= 2'd1;
+                    else begin aes_we <= 1'b1; aes_wd <= pv; padded <= 1'b1; aph <= 2'd3; end
+                2'd3: aph <= 2'd0;                                          // (ap moves on)
+                2'd1: begin aes_go <= 1'b1; aph <= 2'd2; end
+                default:
+                    if (!aes_busy) begin
+                        state <= S_IDLE;
+                        if (aes_op == 3'd3) begin dlen <= ap; ap <= 11'd0; say_out <= 2'd1; end
+                        if (aes_op == 3'd4) begin                           // check the padding first
+                            ap <= {ap[10:4] - 1'b1, 4'hF}; pc_wait <= 1'b1; pc_got <= 1'b0; state <= S_PADCHK;
+                        end
+                    end
+            endcase
+
+        S_PADCHK:                           // dec: the last byte (pv) must be 1-16, and the last pv bytes pv
+            if (pc_wait)
+                pc_wait <= 1'b0;                                            // (the byte at ap is read)
+            else if (!pc_got) begin
+                pv <= aes_q; pc_got <= 1'b1;
+                if (aes_q == 8'd0 || aes_q > 8'd16) begin say_ptr <= SAY_BADPAD; say_ph <= 4'd10; state <= S_IDLE; end
+                else begin ap <= {ap[10:4], 4'd0 - aes_q[3:0]}; pc_wait <= 1'b1; end
+            end else if (aes_q != pv) begin
+                say_ptr <= SAY_BADPAD; say_ph <= 4'd10; state <= S_IDLE;
+            end else if (ap[3:0] == 4'hF) begin                             // good: print the text before it
+                dlen <= {ap[10:4], 4'd0 - pv[3:0]}; ap <= 11'd0; say_out <= 2'd2; state <= S_IDLE;
+            end else begin
+                ap <= ap + 1'b1; pc_wait <= 1'b1;
             end
-        end
 
-        S_EV_SIGN: begin
-            ev_neg <= sum[31];
-            if (sum[31]) sum <= asum[31:0];                                 // print the magnitude
-            ev_ok <= 1'b1; ev_k <= 4'd9; ev_d <= 4'd0; ev_started <= 1'b0;
-            say_ph <= 4'd1;
-            state <= S_IDLE;
-        end
-
-        S_SAY: begin                        // the shell prints: CR LF [- digits CR LF] or a string, then $ space
+        S_SAY: begin                        // the shell prints: CR LF [hex or text CR LF] or a string, then $ space
             state <= S_BYTE;
             src_say <= 1'b1;
             case (say_ph)
                 4'd1: begin say_q <= 8'h0D; say_ph <= 4'd2; end
-                4'd2: begin say_q <= 8'h0A; say_ph <= !ev_ok ? 4'd7 : ev_neg ? 4'd3 : 4'd4; end
-                4'd3: begin say_q <= "-"; say_ph <= 4'd4; end
-                4'd4:
-                    if (asum[32]) begin                                     // the value >= 10^k
-                        sum <= asum[31:0];
-                        ev_d <= ev_d + 1'b1;
-                        state <= S_SAY;
-                    end else if (ev_d != 4'd0 || ev_started || ev_k == 4'd0) begin
-                        say_q <= {4'h3, ev_d};
-                        ev_started <= 1'b1;
-                        ev_d <= 4'd0;
-                        if (ev_k == 4'd0) say_ph <= 4'd5;
-                        else ev_k <= ev_k - 1'b1;
-                    end else begin
-                        ev_k <= ev_k - 1'b1;                                // a leading zero
-                        state <= S_SAY;
-                    end
+                4'd2: begin
+                    say_q <= 8'h0A;
+                    say_ph <= (say_out == 2'd0) ? 4'd7 : (dlen == 11'd0) ? 4'd5 : (say_out == 2'd1) ? 4'd3 : 4'd4;
+                end
+                4'd3: begin say_q <= hexch(aes_q[7:4]); say_ph <= 4'd11; end   // the AES unit's bytes in hex
+                4'd11: begin
+                    say_q <= hexch(aes_q[3:0]); ap <= ap + 1'b1;
+                    say_ph <= (ap + 1'b1 == dlen) ? 4'd5 : 4'd3;
+                end
+                4'd4: begin                                                 // or as text ("." if not printable)
+                    say_q <= (aes_q >= 8'h20 && aes_q < 8'h7F) ? aes_q : ".";
+                    ap <= ap + 1'b1;
+                    say_ph <= (ap + 1'b1 == dlen) ? 4'd5 : 4'd4;
+                end
                 4'd5: begin say_q <= 8'h0D; say_ph <= 4'd6; end
                 4'd6: begin say_q <= 8'h0A; say_ph <= 4'd7; end
                 4'd7: begin say_q <= "$"; say_ph <= 4'd8; end
@@ -1548,8 +1516,8 @@ module term_core (
                 state <= S_IDLE;
             else if (rbyte == 8'd0)
                 ridx <= ridx + 1'b1;
-            else if (!tx_busy && !tx_start) begin
-                tx_start <= 1'b1;
+            else if (!tx_busy && !tx_start_r) begin
+                tx_start_r <= 1'b1;
                 tx_data <= rbyte;
                 ridx <= ridx + 1'b1;
             end
@@ -1562,16 +1530,13 @@ endmodule
 
 
 // Keeps the title bar and status bar up to date while the engine is idle: each cell comes
-// from a template (term_bars.hex) that marks where digits, the sparkline, the activity dot,
-// the theme name and the window title go.
+// from a template (term_bars.hex) that marks where digits, the activity dot, the theme name
+// and the window title go.
 module term_bars (
     input  wire        clk,
     input  wire        ok,                  // the write port is free
     input  wire [7:0]  ln,                  // cursor row and column + 1, decimal
     input  wire [7:0]  col,
-    input  wire [27:0] rx_bcd,
-    input  wire [23:0] uptime,
-    input  wire [31:0] spark,
     input  wire [27:0] baud_bcd,
     input  wire        active,
     input  wire [1:0]  theme,
@@ -1580,37 +1545,29 @@ module term_bars (
     output reg  [12:0] w_addr = 13'd0,
     output reg  [31:0] w_data = 32'd0
 );
-    localparam T_STATIC = 3'd0, T_TITLE = 3'd1, T_DIGIT = 3'd2, T_SPARK = 3'd3, T_DOT = 3'd4, T_THEME = 3'd5;
+    localparam T_STATIC = 3'd0, T_TITLE = 3'd1, T_DIGIT = 3'd2, T_DOT = 3'd4, T_THEME = 3'd5;
     reg [31:0] tmpl [0:159];
     initial $readmemh("term_bars.hex", tmpl);
     reg [31:0] t = 32'd0;
     reg [7:0]  k = 8'd0;
     reg        phase = 1'b0;
 
-    // digits by field: Ln, Col, bytes received (7), hh, mm, ss, speed (7)
-    wire [95:0] digits = {baud_bcd[3:0], baud_bcd[7:4], baud_bcd[11:8], baud_bcd[15:12], baud_bcd[19:16],
-                          baud_bcd[23:20], baud_bcd[27:24],
-                          uptime[3:0], uptime[7:4], uptime[11:8], uptime[15:12], uptime[19:16], uptime[23:20],
-                          rx_bcd[3:0], rx_bcd[7:4], rx_bcd[11:8], rx_bcd[15:12], rx_bcd[19:16], rx_bcd[23:20],
-                          rx_bcd[27:24], col[3:0], col[7:4], ln[3:0], ln[7:4]};
-    wire [4:0]  field = t[4:0];
+    // digits by field: Ln, Col, speed (7)
+    wire [43:0] digits = {baud_bcd[3:0], baud_bcd[7:4], baud_bcd[11:8], baud_bcd[15:12], baud_bcd[19:16],
+                          baud_bcd[23:20], baud_bcd[27:24], col[3:0], col[7:4], ln[3:0], ln[7:4]};
+    wire [3:0]  field = t[3:0];
     wire [3:0]  digit = digits[4 * field +: 4];
-    // leading zeros: the tens of Ln and Col, and of the byte count and the speed all but the
-    // last digit
-    wire [6:0]  rx_lead, bd_lead;
-    assign rx_lead[0] = (rx_bcd[27:24] == 4'd0);
+    // leading zeros: the tens of Ln and Col, and of the speed all but the last digit
+    wire [6:0]  bd_lead;
     assign bd_lead[0] = (baud_bcd[27:24] == 4'd0);
     genvar gi;
     generate
         for (gi = 1; gi < 7; gi = gi + 1) begin : lead
-            assign rx_lead[gi] = rx_lead[gi - 1] && (rx_bcd[27 - 4 * gi -: 4] == 4'd0);
             assign bd_lead[gi] = bd_lead[gi - 1] && (baud_bcd[27 - 4 * gi -: 4] == 4'd0);
         end
     endgenerate
-    wire blank_digit = (field == 5'd0 && ln[7:4] == 4'd0) || (field == 5'd2 && col[7:4] == 4'd0) ||
-                       (field >= 5'd4 && field <= 5'd9 && rx_lead[field - 5'd4]) ||
-                       (field >= 5'd17 && field <= 5'd22 && bd_lead[field - 5'd17]);
-    wire [3:0]  level = spark[4 * t[2:0] +: 4];
+    wire blank_digit = (field == 4'd0 && ln[7:4] == 4'd0) || (field == 4'd2 && col[7:4] == 4'd0) ||
+                       (field >= 4'd4 && field <= 4'd9 && bd_lead[field - 4'd4]);
     reg  [7:0]  letter;                     // the theme's name: COLOR, GREEN, AMBER
     always @*
         case ({theme, t[2:0]})
@@ -1630,7 +1587,6 @@ module term_bars (
         f = t[17:10];
         case (kind)
             T_DIGIT: g = blank_digit ? 10'h020 : {6'd3, digit};
-            T_SPARK: g = (level == 4'd0) ? 10'h020 : 10'h180 + level;
             T_DOT:   f = active ? t[17:10] : 8'd238;
             T_THEME: g = {2'b00, letter};
             default: ;
